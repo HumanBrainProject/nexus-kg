@@ -29,7 +29,7 @@ object Main {
   @SuppressWarnings(Array("UnusedMethodParameter"))
   def main(args: Array[String]): Unit = {
     val config = ExternalConfig("KG_CONFIG_FILE", "kg.config.file")
-    startMonitoring(config)
+    //startMonitoring(config)
 
     val settings = new Settings(config)
 
@@ -66,8 +66,8 @@ object Main {
     bootstrap.joinCluster()
     as.registerOnTermination {
       bootstrap.leaveCluster()
-      Kamon.stopAllReporters()
-      SystemMetrics.stopCollecting()
+      //Kamon.stopAllReporters()
+      //SystemMetrics.stopCollecting()
     }
 
     // attempt to leave the cluster before shutting down

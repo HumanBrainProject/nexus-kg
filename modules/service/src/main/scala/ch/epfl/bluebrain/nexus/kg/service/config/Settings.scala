@@ -31,7 +31,8 @@ class Settings(config: Config) extends Extension {
     /**
       * The currently deployed version of the service.
       */
-    val Version = BuildInfo.version
+    //val Version = BuildInfo.version
+    val Version = "0.9.14"
 
     /**
       * The current environment.
@@ -216,6 +217,15 @@ class Settings(config: Config) extends Extension {
       * ElasticSearch type.
       */
     val Type = ns.getString("elastic.type")
+
+  }
+
+  object Forward {
+
+    /**
+      * The base uri for the elastic endpoint.
+      */
+    val BaseUri = Uri(ns.getString("forward.base-uri"))
 
   }
 

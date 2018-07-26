@@ -13,6 +13,7 @@ import akka.http.scaladsl.server.Route
 import akka.stream.{ActorMaterializer, Materializer}
 import cats.instances.future._
 import ch.epfl.bluebrain.nexus.commons.es.client.{ElasticClient, ElasticQueryClient}
+import ch.epfl.bluebrain.nexus.commons.forward.client.ForwardClient
 import ch.epfl.bluebrain.nexus.commons.http.HttpClient
 import ch.epfl.bluebrain.nexus.commons.http.HttpClient._
 import ch.epfl.bluebrain.nexus.commons.http.JsonLdCirceSupport.OrderedKeys
@@ -80,6 +81,8 @@ class BootstrapService(settings: Settings)(implicit as: ActorSystem,
   val elasticQueryClient = ElasticQueryClient[Future](settings.Elastic.BaseUri)
 
   val elasticClient = ElasticClient[Future](settings.Elastic.BaseUri, elasticQueryClient)
+
+  val forwardClient = ForwardClient[Future](settings.Forward.BaseUri)
 
   val (orgs, doms, schemas, contexts, instances, queries) = operations()
 
