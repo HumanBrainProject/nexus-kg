@@ -2,7 +2,6 @@ package ch.epfl.bluebrain.nexus.kg.indexing.instances
 
 import cats.MonadError
 import ch.epfl.bluebrain.nexus.commons.forward.client.ForwardClient
-import ch.epfl.bluebrain.nexus.kg.core.contexts.Contexts
 import ch.epfl.bluebrain.nexus.kg.core.instances.InstanceEvent._
 import ch.epfl.bluebrain.nexus.kg.core.instances.InstanceEvent
 import ch.epfl.bluebrain.nexus.kg.indexing.{BaseForwardIndexer, ForwardIndexingSettings}
@@ -17,14 +16,13 @@ import journal.Logger
   * @param F        a MonadError typeclass instance for ''F[_]''
   * @tparam F the monadic effect type
   */
-class InstanceForwardIndexer[F[_]](client: ForwardClient[F], contexts: Contexts[F], settings: ForwardIndexingSettings)(
+class InstanceForwardIndexer[F[_]](client: ForwardClient[F], settings: ForwardIndexingSettings)(
     implicit F: MonadError[F, Throwable])
     extends BaseForwardIndexer[F](client, settings){
 
   private val log = Logger[this.type]
-  log.info(s"forward index to: ${settings.base}")
-  log.info(s"${contexts.toString}")
-  F.pure(())
+  log.info(s" ==== forward index base url: ${settings.base}")
+
   /**
     * Indexes the event by pushing it's json ld representation into the Forward indexer while also updating the
     * existing content.
@@ -59,10 +57,6 @@ class InstanceForwardIndexer[F[_]](client: ForwardClient[F], contexts: Contexts[
         log.info(s"Indexing 'InstanceAttachmentCreated' event for id: '${fullId}'")
         F.pure(())
 
-
-
-
-
       case InstanceAttachmentRemoved(_, _, _) =>
         log.info(s"Indexing 'InstanceAttachmentRemoved' event for id: '${fullId}'")
         F.pure(())
@@ -81,7 +75,7 @@ object InstanceForwardIndexer {
     * @param F        a MonadError typeclass instance for ''F[_]''
     * @tparam F the monadic effect type
     */
-  final def apply[F[_]](client: ForwardClient[F], contexts: Contexts[F], settings: ForwardIndexingSettings)(
+  final def apply[F[_]](client: ForwardClient[F], settings: ForwardIndexingSettings)(
       implicit F: MonadError[F, Throwable]): InstanceForwardIndexer[F] =
-    new InstanceForwardIndexer(client, contexts, settings)
+    new InstanceForwardIndexer(client, settings)
 }

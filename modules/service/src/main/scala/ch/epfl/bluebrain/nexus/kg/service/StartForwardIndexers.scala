@@ -10,7 +10,6 @@ import ch.epfl.bluebrain.nexus.kg.indexing.ForwardIndexingSettings
 import ch.epfl.bluebrain.nexus.kg.indexing.instances.InstanceForwardIndexer
 import ch.epfl.bluebrain.nexus.commons.forward.client.ForwardClient
 import ch.epfl.bluebrain.nexus.commons.service.persistence.SequentialTagIndexer
-import ch.epfl.bluebrain.nexus.kg.core.contexts.Contexts
 import ch.epfl.bluebrain.nexus.kg.core.instances.InstanceEvent
 import ch.epfl.bluebrain.nexus.kg.service.config.Settings
 
@@ -22,7 +21,6 @@ import scala.concurrent.{ExecutionContext, Future}
   *
   * @param settings     the app settings
   * @param forwardClient the Forward client implementation
-  * @param contexts     the context operation bundle
   * @param apiUri       the service public uri + prefix
   * @param as           the implicitly available [[ActorSystem]]
   * @param ec           the implicitly available [[ExecutionContext]]
@@ -30,7 +28,6 @@ import scala.concurrent.{ExecutionContext, Future}
 // $COVERAGE-OFF$
 class StartForwardIndexers(settings: Settings,
                            forwardClient: ForwardClient[Future],
-                           contexts: Contexts[Future],
                            apiUri: Uri)(implicit
                                         as: ActorSystem,
                                         ec: ExecutionContext) {
@@ -44,7 +41,7 @@ class StartForwardIndexers(settings: Settings,
 
   private def startIndexingInstances() =
     SequentialTagIndexer.start[InstanceEvent](
-      InstanceForwardIndexer[Future](forwardClient, contexts, indexingSettings)(catsStdInstancesForFuture(ec)).apply _,
+      InstanceForwardIndexer[Future](forwardClient, indexingSettings)(catsStdInstancesForFuture(ec)).apply _,
       "instance-to-forward",
       settings.Persistence.QueryJournalPlugin,
       "instance",
@@ -64,11 +61,11 @@ object StartForwardIndexers {
     * @param forwardClient the Forward client implementation
     * @param apiUri        the service public uri + prefix
     */
-  final def apply(settings: Settings, forwardClient: ForwardClient[Future], contexts: Contexts[Future], apiUri: Uri)(
+  final def apply(settings: Settings, forwardClient: ForwardClient[Future], apiUri: Uri)(
     implicit
     as: ActorSystem,
     ec: ExecutionContext): StartForwardIndexers =
-    new StartForwardIndexers(settings, forwardClient, contexts, apiUri)
+    new StartForwardIndexers(settings, forwardClient, apiUri)
 
 }
 
