@@ -38,27 +38,33 @@ class InstanceForwardIndexer[F[_]](client: ForwardClient[F], settings: ForwardIn
       event.id.schemaId.name,
       s"v${version.major}.${version.minor}.${version.patch}",
       event.id.id).mkString("/")
+    val authorId = event.meta.author.id.id
+    val authorIdOpt = if (authorId.size > 0) Some(authorId) else None
+    val eventTimeStamp = event.meta.instant.toString
+    val eventTimeStampOpt = if (eventTimeStamp.size > 0) Some(eventTimeStamp) else None
 
     event match {
       case InstanceCreated(_, _, _, value) =>
-        log.info(s"Indexing 'InstanceCreated' event for id: '${fullId}'")
-        client.create(fullId, value)
+        log.info(s"Forward Indexing - CREATE [${authorId} at ${eventTimeStamp}] id: '${fullId}'")
+        client.create(fullId, value, authorIdOpt, eventTimeStampOpt)
 
       case InstanceUpdated(_, rev, _, value) =>
         val fullIdWithRev = s"${fullId}/${rev}"
-        log.info(s"Indexing 'InstanceUpdated' event for id: '${fullIdWithRev}'")
-        client.update(fullIdWithRev, value)
+        log.info(s"Forward Indexing - UPDATE [${authorId} at $eventTimeStamp}] id: '${fullIdWithRev}'")
+        client.update(fullIdWithRev, value, authorIdOpt, eventTimeStampOpt)
 
       case InstanceDeprecated(_, rev, _) =>
-        log.info(s"Indexing 'InstanceDeprecated' event for id: '${fullId}'")
-        client.delete(fullId, Some(rev.toString))
+        log.info(s"Forward Indexing - DEPRECATE [${authorId} at ${eventTimeStamp}] id: '${fullId}' rev: ${rev}")
+        client.delete(fullId, Some(rev.toString), authorIdOpt, eventTimeStampOpt)
 
+      // TODO not used yet
       case InstanceAttachmentCreated(_, _, _, _) =>
-        log.info(s"Indexing 'InstanceAttachmentCreated' event for id: '${fullId}'")
+        log.info(s"Forward Indexing - CREATEATTACHEMENT [${authorId} at ${eventTimeStamp}] id: '${fullId}'")
         F.pure(())
 
+      // TODO not used yet
       case InstanceAttachmentRemoved(_, _, _) =>
-        log.info(s"Indexing 'InstanceAttachmentRemoved' event for id: '${fullId}'")
+        log.info(s"Forward Indexing - REMOVEATTACHEMENT [${authorId} at ${eventTimeStamp}] id: '${fullId}'")
         F.pure(())
     }
   }
