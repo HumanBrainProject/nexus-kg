@@ -31,8 +31,8 @@ class Settings(config: Config) extends Extension {
     /**
       * The currently deployed version of the service.
       */
-    //val Version = BuildInfo.version
-    val Version = "0.9.14"
+    val Version = BuildInfo.version
+    //val Version = "0.9.14"
 
     /**
       * The current environment.
