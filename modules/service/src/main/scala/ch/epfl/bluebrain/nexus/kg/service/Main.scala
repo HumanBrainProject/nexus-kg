@@ -59,6 +59,7 @@ object Main {
 
       StartSparqlIndexers(settings, bootstrap.sparqlClient, bootstrap.contexts, bootstrap.apiUri)
       StartElasticIndexers(settings, bootstrap.elasticClient, bootstrap.contexts, bootstrap.apiUri)
+      StartForwardIndexers(settings, bootstrap.forwardClient, bootstrap.apiUri)
 
       if (settings.Kafka.Enabled) StartKafkaPublishers(settings.Kafka.Topic, settings.Persistence.QueryJournalPlugin)
     }
