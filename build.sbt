@@ -117,6 +117,7 @@ lazy val kg = project
       catsEffect,
       circeCore,
       elasticClient,
+      forwardClient,
       journalCore,
       logbackClassic,
       monixTail,
