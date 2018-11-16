@@ -2,6 +2,7 @@ package ch.epfl.bluebrain.nexus.kg.indexing
 
 
 import cats.MonadError
+import ch.epfl.bluebrain.nexus.commons.forward.client.ForwardClient
 import ch.epfl.bluebrain.nexus.commons.test.Resources
 
 /**
@@ -15,8 +16,8 @@ private[indexing] abstract class BaseForwardIndexer[F[_]](client: ForwardClient[
     implicit F: MonadError[F, Throwable])
     extends Resources {
   val ForwardIndexingSettings(base) = settings
-
-  implicit val instanceIdQualifier: ConfiguredQualifier[InstanceId]   = Qualifier.configured[InstanceId](base)
+//
+//  implicit val instanceIdQualifier: ConfiguredQualifier[InstanceId]   = Qualifier.configured[InstanceId](base)
 
   def testPost(): F[Unit] = {
     client.toString

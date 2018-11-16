@@ -3,7 +3,7 @@ package ch.epfl.bluebrain.nexus.kg.indexing
 import cats.MonadError
 import ch.epfl.bluebrain.nexus.commons.forward.client.ForwardClient
 import ch.epfl.bluebrain.nexus.iam.client.types.Identity._
-import ch.epfl.bluebrain.nexus.kg.resources.{Event, Id, ProjectRef}
+import ch.epfl.bluebrain.nexus.kg.resources.Event
 import ch.epfl.bluebrain.nexus.kg.resources.Event._
 import journal.Logger
 
