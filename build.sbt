@@ -47,12 +47,13 @@ val pureconfigVersion           = "0.9.1"
 val shapelessVersion            = "2.3.3"
 val scalaTestVersion            = "3.0.5"
 val wesoValidatorVersion        = "0.0.65-nexus1"
+val forwardIndexerVersion       = "0.10.19"
 
 // Dependencies modules
 lazy val adminClient          = "ch.epfl.bluebrain.nexus" %% "admin-client"                % adminVersion
 lazy val iamClient            = "ch.epfl.bluebrain.nexus" %% "iam-client"                  % iamVersion
 lazy val elasticClient        = "ch.epfl.bluebrain.nexus" %% "elastic-client"              % commonsVersion
-lazy val forwardClient        = "hbp.kg.nexus"            %% "forward-client"              % "0.10.19"
+lazy val forwardClient        = "hbp.kg.nexus"            %% "forward-client"              % forwardIndexerVersion
 lazy val rdfCore              = "ch.epfl.bluebrain.nexus" %% "rdf-core"                    % rdfVersion
 lazy val rdfJena              = "ch.epfl.bluebrain.nexus" %% "rdf-jena"                    % rdfVersion
 lazy val rdfAkka              = "ch.epfl.bluebrain.nexus" %% "rdf-akka"                    % rdfVersion
