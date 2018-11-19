@@ -1,6 +1,9 @@
 package ch.epfl.bluebrain.nexus.kg.config
 
+import cats.Show
+import cats.syntax.show._
 import ch.epfl.bluebrain.nexus.rdf.Iri
+import ch.epfl.bluebrain.nexus.rdf.Iri.AbsoluteIri
 import ch.epfl.bluebrain.nexus.rdf.Node.IriNode
 import ch.epfl.bluebrain.nexus.rdf.syntax.node.unsafe._
 
@@ -9,76 +12,130 @@ import ch.epfl.bluebrain.nexus.rdf.syntax.node.unsafe._
   */
 object Vocabulary {
 
+  object dcat {
+    val base: Iri.AbsoluteIri          = url"http://www.w3.org/ns/dcat#".value
+    private[Vocabulary] implicit val _ = IriNode(base)
+
+    /**
+      * @param suffix the segment to suffix to the base
+      * @return an [[IriNode]] composed by the ''base'' plus the provided ''suffix''
+      */
+    def withSuffix(suffix: String): IriNode = url"${base.show + suffix}"
+
+    // Attachment metadata vocabulary
+    val distribution = Metadata("distribution")
+    val byteSize     = Metadata("byteSize")
+    val downloadURL  = Metadata("downloadURL")
+    val accessURL    = Metadata("accessURL")
+    val mediaType    = Metadata("mediaType")
+
+    val Distribution = withSuffix("Distribution")
+  }
+
   /**
     * Nexus vocabulary.
     */
   object nxv {
-    val base: Iri.AbsoluteIri = url"https://bluebrain.github.io/nexus/vocabulary/".value
+    val base: Iri.AbsoluteIri          = url"https://bluebrain.github.io/nexus/vocabulary/".value
+    private[Vocabulary] implicit val _ = IriNode(base)
 
     /**
-      * @param suffix the segment to add to the prefix mapping
+      * @param suffix the segment to suffix to the base
       * @return an [[IriNode]] composed by the ''base'' plus the provided ''suffix''
       */
-    def withPath(suffix: String): IriNode = IriNode(base + suffix)
+    def withSuffix(suffix: String): IriNode = IriNode(base + suffix)
 
-    val rev                 = withPath("rev")
-    val tag                 = withPath("tag")
-    val deprecated          = withPath("deprecated")
-    val createdAt           = withPath("createdAt")
-    val updatedAt           = withPath("updatedAt")
-    val createdBy           = withPath("createdBy")
-    val updatedBy           = withPath("updatedBy")
-    val constrainedBy       = withPath("constrainedBy")
-    val isPartOf            = withPath("isPartOf")
-    val priority            = withPath("priority")
-    val uuid                = withPath("uuid")
-    val resourceTypes       = withPath("resourceTypes")
-    val resourceSchemas     = withPath("resourceSchemas")
-    val resourceTag         = withPath("resourceTag")
-    val includeMetadata     = withPath("includeMetadata")
-    val sourceAsText        = withPath("sourceAsText")
-    val mapping             = withPath("mapping")
-    val projects            = withPath("projects")
-    val identities          = withPath("identities")
-    val realm               = withPath("realm")
-    val sub                 = withPath("sub")
-    val group               = withPath("group")
-    val defaultElasticIndex = withPath("defaultElasticIndex")
-    val defaultSparqlIndex  = withPath("defaultSparqlIndex")
-    val originalSource      = withPath("_original_source")
+    // Metadata vocabulary
+    val rev           = Metadata("rev")
+    val deprecated    = Metadata("deprecated")
+    val createdAt     = Metadata("createdAt")
+    val updatedAt     = Metadata("updatedAt")
+    val createdBy     = Metadata("createdBy")
+    val updatedBy     = Metadata("updatedBy")
+    val constrainedBy = Metadata("constrainedBy")
+    val self          = Metadata("self")
+    val project       = Metadata("project")
+    val total         = Metadata("total")
+    val results       = Metadata("results")
+    val maxScore      = Metadata("maxScore")
+    val score         = Metadata("score")
+    val uuid          = Metadata("uuid")
 
-    val total    = withPath("total")
-    val results  = withPath("results")
-    val resultId = withPath("resultId")
-    val maxScore = withPath("maxScore")
-    val score    = withPath("score")
+    // Attachment metadata vocabulary
+    val originalFileName = Metadata("originalFileName")
+    val digest           = Metadata("digest")
+    val algorithm        = Metadata("algorithm")
+    val value            = Metadata("value")
 
-    //Attachment
-    val distribution     = withPath("distribution")
-    val contentSize      = withPath("contentSize")
-    val unit             = withPath("unit")
-    val value            = withPath("value")
-    val digest           = withPath("digest")
-    val algorithm        = withPath("algorithm")
-    val downloadURL      = withPath("downloadURL")
-    val mediaType        = withPath("mediaType")
-    val originalFileName = withPath("originalFileName")
+    // Elasticsearch sourceAsText predicate
+    val originalSource = Metadata("original_source")
 
-    val Schema           = withPath("Schema")
-    val Resource         = withPath("Resource")
-    val Ontology         = withPath("Ontology")
-    val Resolver         = withPath("Resolver")
-    val InProject        = withPath("InProject")
-    val InAccount        = withPath("InAccount")
-    val CrossProject     = withPath("CrossProject")
-    val View             = withPath("View")
-    val ElasticView      = withPath("ElasticView")
-    val SparqlView       = withPath("SparqlView")
-    val UserRef          = withPath("UserRef")
-    val GroupRef         = withPath("GroupRef")
-    val AuthenticatedRef = withPath("AuthenticatedRef")
-    val Anonymous        = withPath("Anonymous")
-    val Alpha            = withPath("Alpha")
+    // Tagging resource payload vocabulary
+    val tag = withSuffix("tag")
 
+    // Resolvers payload vocabulary
+    val priority      = withSuffix("priority")
+    val resourceTypes = withSuffix("resourceTypes")
+    val projects      = withSuffix("projects")
+    val identities    = withSuffix("identities")
+    val realm         = withSuffix("realm")
+    val sub           = withSuffix("sub")
+    val group         = withSuffix("group")
+
+    // View payload vocabulary
+    val resourceSchemas = withSuffix("resourceSchemas")
+    val resourceTag     = withSuffix("resourceTag")
+    val includeMetadata = withSuffix("includeMetadata")
+    val sourceAsText    = withSuffix("sourceAsText")
+    val mapping         = withSuffix("mapping")
+    val views           = withSuffix("views")
+    val viewId          = withSuffix("viewId")
+
+    // View default ids
+    val defaultElasticIndex = withSuffix("defaultElasticIndex")
+    val defaultSparqlIndex  = withSuffix("defaultSparqlIndex")
+
+    // @type platform ids
+    val Schema               = withSuffix("Schema")
+    val Resource             = withSuffix("Resource")
+    val Ontology             = withSuffix("Ontology")
+    val Resolver             = withSuffix("Resolver")
+    val InProject            = withSuffix("InProject")
+    val InAccount            = withSuffix("InAccount")
+    val CrossProject         = withSuffix("CrossProject")
+    val View                 = withSuffix("View")
+    val ElasticView          = withSuffix("ElasticView")
+    val SparqlView           = withSuffix("SparqlView")
+    val AggregateElasticView = withSuffix("AggregateElasticView")
+    val UserRef              = withSuffix("UserRef")
+    val GroupRef             = withSuffix("GroupRef")
+    val AuthenticatedRef     = withSuffix("AuthenticatedRef")
+    val Anonymous            = withSuffix("Anonymous")
+    val Alpha                = withSuffix("Alpha")
+  }
+
+  /**
+    * Metadata vocabulary.
+    *
+    * @param prefix the prefix associated to this term, used in the Json-LD context
+    * @param value  the fully expanded [[AbsoluteIri]] to what the ''prefix'' resolves
+    */
+  final case class Metadata(prefix: String, value: AbsoluteIri)
+
+  object Metadata {
+
+    /**
+      * Constructs a [[Metadata]] vocabulary term from the given ''base'' and the provided ''lastSegment''.
+      *
+      * @param lastSegment the last segment to append to the ''base'' to build the metadata
+      *                    vocabulary term
+      */
+    def apply(lastSegment: String)(implicit base: IriNode): Metadata =
+      Metadata("_" + lastSegment, url"${base.value.show + lastSegment}".value)
+
+    implicit def metadatataIri(m: Metadata): IriNode             = IriNode(m.value)
+    implicit def metadatataAbsoluteIri(m: Metadata): AbsoluteIri = m.value
+    implicit def metadataToIriF(p: Metadata): IriNode => Boolean = _ == IriNode(p.value)
+    implicit val metadatataShow: Show[Metadata]                  = Show.show(_.value.show)
   }
 }

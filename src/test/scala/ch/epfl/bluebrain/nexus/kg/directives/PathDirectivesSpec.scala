@@ -35,7 +35,7 @@ class PathDirectivesSpec extends WordSpecLike with Matchers with ScalatestRouteT
       }
 
     def routeIsSegment(iri: AbsoluteIri): Route =
-      (get & pathPrefix(isIdSegment(iri)) & pathPrefix(Segment) & pathEndOrSingleSlash) { s =>
+      (get & isIdSegment(iri) & pathPrefix(Segment) & pathEndOrSingleSlash) { s =>
         complete(StatusCodes.OK -> s)
       }
 
@@ -46,7 +46,7 @@ class PathDirectivesSpec extends WordSpecLike with Matchers with ScalatestRouteT
     }
 
     "do not pass a route when a specific segment id does not match" in {
-      Get("/nxv:rev/other") ~> routeIsSegment(nxv.distribution.value) ~> check {
+      Get("/nxv:rev/other") ~> routeIsSegment(nxv.results.value) ~> check {
         handled shouldEqual false
       }
     }

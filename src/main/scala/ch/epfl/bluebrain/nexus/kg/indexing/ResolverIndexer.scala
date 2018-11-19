@@ -8,12 +8,13 @@ import cats.syntax.all._
 import ch.epfl.bluebrain.nexus.commons.types.RetriableErr
 import ch.epfl.bluebrain.nexus.kg.RuntimeErr.OperationTimedOut
 import ch.epfl.bluebrain.nexus.kg.async.DistributedCache
-import ch.epfl.bluebrain.nexus.kg.config.AppConfig.PersistenceConfig
+import ch.epfl.bluebrain.nexus.kg.config.AppConfig.{IndexingConfig, PersistenceConfig}
 import ch.epfl.bluebrain.nexus.kg.config.Vocabulary.nxv
 import ch.epfl.bluebrain.nexus.kg.resolve.Resolver
 import ch.epfl.bluebrain.nexus.kg.resources.Rejection.{AccountNotFound, NotFound}
 import ch.epfl.bluebrain.nexus.kg.resources._
-import ch.epfl.bluebrain.nexus.service.indexer.persistence.SequentialTagIndexer
+import ch.epfl.bluebrain.nexus.service.indexer.persistence.OffsetStorage.Volatile
+import ch.epfl.bluebrain.nexus.service.indexer.persistence.{IndexerConfig, SequentialTagIndexer}
 import journal.Logger
 import monix.eval.Task
 import monix.execution.Scheduler
@@ -38,7 +39,7 @@ private class ResolverIndexer[F[_]](resources: Resources[F], cache: DistributedC
   def apply(event: Event): F[Unit] = {
     val projectRef = event.id.parent
 
-    val result: EitherT[F, Rejection, Boolean] = for {
+    val result: EitherT[F, Rejection, Unit] = for {
       resource     <- resources.fetch(event.id, None).toRight[Rejection](NotFound(event.id.ref))
       materialized <- resources.materialize(resource)
       accountRef   <- EitherT.fromOptionF(cache.accountRef(projectRef), AccountNotFound(projectRef))
@@ -56,12 +57,13 @@ private class ResolverIndexer[F[_]](resources: Resources[F], cache: DistributedC
             s"TimedOut while attempting to index resolver event '${event.id.show} (rev = ${event.rev})', cause: $reason"
           F.raiseError(new RetriableErr(msg))
       }
-      .map {
-        case Right(_) => ()
+      .flatMap {
+        case Right(_)                                  => F.pure(())
+        case Left(err @ AccountNotFound(`projectRef`)) => F.raiseError(new RetriableErr(err.msg))
         case Left(err) =>
           logger.error(
             s"Error while attempting to fetch/resolve event '${event.id.show} (rev = ${event.rev})', cause: '${err.message}'")
-          ()
+          F.pure(())
       }
   }
 }
@@ -75,18 +77,23 @@ object ResolverIndexer {
     * @param cache the distributed cache
     */
   // $COVERAGE-OFF$
-  final def start(resources: Resources[Task], cache: DistributedCache[Task])(
-      implicit
-      as: ActorSystem,
-      s: Scheduler,
-      persistence: PersistenceConfig): ActorRef = {
+  final def start(resources: Resources[Task], cache: DistributedCache[Task])(implicit
+                                                                             as: ActorSystem,
+                                                                             s: Scheduler,
+                                                                             persistence: PersistenceConfig,
+                                                                             indexing: IndexingConfig): ActorRef = {
+
     val indexer = new ResolverIndexer[Task](resources, cache)
-    SequentialTagIndexer.startLocal[Event](
-      (ev: Event) => indexer(ev).runAsync,
-      persistence.queryJournalPlugin,
-      tag = s"type=${nxv.Resolver.value.show}",
-      name = "resolver-indexer"
-    )
+    SequentialTagIndexer.start(
+      IndexerConfig.builder
+        .name("resolver-indexer")
+        .tag(s"type=${nxv.Resolver.value.show}")
+        .plugin(persistence.queryJournalPlugin)
+        .retry(indexing.retry.maxCount, indexing.retry.strategy)
+        .batch(indexing.batch, indexing.batchTimeout)
+        .offset(Volatile)
+        .index((l: List[Event]) => Task.sequence(l.removeDupIds.map(indexer(_))).map(_ => ()).runAsync)
+        .build)
   }
   // $COVERAGE-ON$
 }

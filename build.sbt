@@ -25,28 +25,29 @@ scalafmt: {
  */
 
 // Dependency versions
-val adminVersion                = "0.2.8"
-val iamVersion                  = "0.10.23"
-val commonsVersion              = "0.10.18"
-val rdfVersion                  = "0.2.17"
-val serviceVersion              = "0.10.14"
-val sourcingVersion             = "0.10.7"
-val akkaVersion                 = "2.5.14"
-val akkaCorsVersion             = "0.3.0"
-val akkaHttpVersion             = "10.1.3"
+val adminVersion                = "0.3.8"
+val iamVersion                  = "0.10.27"
+val commonsVersion              = "0.10.37"
+val rdfVersion                  = "0.2.26"
+val serviceVersion              = "0.10.19"
+val sourcingVersion             = "0.10.8"
+val akkaVersion                 = "2.5.18"
+val akkaCorsVersion             = "0.3.1"
+val akkaHttpVersion             = "10.1.5"
 val akkaPersistenceInMemVersion = "2.5.1.1"
-val akkaPersistenceCassVersion  = "0.88"
-val catsVersion                 = "1.2.0"
-val catsEffectVersion           = "1.0.0-RC2"
-val circeVersion                = "0.9.3"
+val akkaPersistenceCassVersion  = "0.91"
+val catsVersion                 = "1.4.0"
+val catsEffectVersion           = "1.0.0"
+val circeVersion                = "0.10.1"
 val journalVersion              = "3.0.19"
 val logbackVersion              = "1.2.3"
-val mockitoVersion              = "2.21.0"
+val mockitoVersion              = "2.23.0"
 val monixVersion                = "3.0.0-RC1"
-val pureconfigVersion           = "0.9.1"
+val pureconfigVersion           = "0.9.2"
 val shapelessVersion            = "2.3.3"
 val scalaTestVersion            = "3.0.5"
 val wesoValidatorVersion        = "0.0.65-nexus1"
+val kryoVersion                 = "0.5.2"
 val forwardIndexerVersion       = "0.10.19"
 
 // Dependencies modules
@@ -72,6 +73,7 @@ lazy val akkaCluster          = "com.typesafe.akka"       %% "akka-cluster"     
 lazy val akkaClusterSharding  = "com.typesafe.akka"       %% "akka-cluster-sharding"       % akkaVersion
 lazy val akkaDistributedData  = "com.typesafe.akka"       %% "akka-distributed-data"       % akkaVersion
 lazy val akkaHttp             = "com.typesafe.akka"       %% "akka-http"                   % akkaHttpVersion
+lazy val akkaHttpCors         = "ch.megard"               %% "akka-http-cors"              % akkaCorsVersion
 lazy val akkaHttpTestKit      = "com.typesafe.akka"       %% "akka-http-testkit"           % akkaHttpVersion
 lazy val akkaPersistence      = "com.typesafe.akka"       %% "akka-persistence"            % akkaVersion
 lazy val akkaPersistenceCass  = "com.typesafe.akka"       %% "akka-persistence-cassandra"  % akkaPersistenceCassVersion
@@ -89,6 +91,7 @@ lazy val pureconfig           = "com.github.pureconfig"   %% "pureconfig"       
 lazy val scalaTest            = "org.scalatest"           %% "scalatest"                   % scalaTestVersion
 lazy val shapeless            = "com.chuusai"             %% "shapeless"                   % shapelessVersion
 lazy val topQuadrantShacl     = "ch.epfl.bluebrain.nexus" %% "shacl-topquadrant-validator" % commonsVersion
+lazy val kryo                 = "com.github.romix.akka"   %% "akka-kryo-serialization"     % kryoVersion
 
 lazy val kg = project
   .in(file("."))
@@ -109,6 +112,7 @@ lazy val kg = project
       sourcingAkka,
       akkaDistributedData,
       akkaHttp,
+      akkaHttpCors,
       akkaPersistenceCass,
       akkaStream,
       akkaSlf4j,
@@ -119,6 +123,7 @@ lazy val kg = project
       elasticClient,
       forwardClient,
       journalCore,
+      kryo,
       logbackClassic,
       monixTail,
       pureconfig,
@@ -161,15 +166,8 @@ inThisBuild(
     // These are the sbt-release-early settings to configure
     releaseEarlyWith              := BintrayPublisher,
     releaseEarlyNoGpg             := true,
-    releaseEarlyEnableSyncToMaven := false,
-    version                       := "0.9.15p"
+    releaseEarlyEnableSyncToMaven := false
   )
 )
 
 addCommandAlias("review", ";clean;scalafmtSbt;scalafmtSbtCheck;coverage;scapegoat;test;coverageReport;coverageAggregate")
-
-mainClass in Compile := Some("ch.epfl.bluebrain.nexus.kg.service.Main")
-dockerBaseImage       := "openjdk:jre-alpine"
-enablePlugins(JavaAppPackaging)
-enablePlugins(DockerPlugin)
-enablePlugins(AshScriptPlugin)

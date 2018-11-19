@@ -6,23 +6,22 @@ import java.util.UUID
 import java.util.regex.Pattern.quote
 
 import akka.actor.ActorSystem
-import akka.http.scaladsl.model.StatusCodes
 import akka.testkit.TestKit
 import cats.data.OptionT
 import cats.instances.future._
 import cats.syntax.show._
-import ch.epfl.bluebrain.nexus.commons.es.client.ElasticClient
-import ch.epfl.bluebrain.nexus.commons.es.client.ElasticFailure.ElasticClientError
-import ch.epfl.bluebrain.nexus.commons.http.HttpClient
+import ch.epfl.bluebrain.nexus.admin.client.types.Project
+import ch.epfl.bluebrain.nexus.commons.es.client.ElasticClient.BulkOp
 import ch.epfl.bluebrain.nexus.commons.test.Resources.jsonContentOf
 import ch.epfl.bluebrain.nexus.iam.client.types.Identity.Anonymous
+import ch.epfl.bluebrain.nexus.kg.TestHelper
 import ch.epfl.bluebrain.nexus.kg.config.Settings
 import ch.epfl.bluebrain.nexus.kg.config.Vocabulary.nxv
+import ch.epfl.bluebrain.nexus.kg.directives.LabeledProject
 import ch.epfl.bluebrain.nexus.kg.indexing.View.ElasticView
-import ch.epfl.bluebrain.nexus.kg.resources.Event.Created
+import ch.epfl.bluebrain.nexus.kg.resources.Event.{Created, Updated}
 import ch.epfl.bluebrain.nexus.kg.resources.Rejection.NotFound
 import ch.epfl.bluebrain.nexus.kg.resources._
-import ch.epfl.bluebrain.nexus.kg.{urlEncode, TestHelper}
 import ch.epfl.bluebrain.nexus.rdf.syntax.node.unsafe._
 import ch.epfl.bluebrain.nexus.service.http.Path
 import ch.epfl.bluebrain.nexus.service.http.UriOps._
@@ -46,18 +45,24 @@ class ElasticIndexerSpec
     with BeforeAndAfter
     with TestHelper {
 
-  override implicit val patienceConfig: PatienceConfig = PatienceConfig(3 seconds, 0.3 seconds)
+  override implicit val patienceConfig: PatienceConfig = PatienceConfig(5 seconds, 0.3 seconds)
 
   import system.dispatcher
 
   private val resources          = mock[Resources[Future]]
-  private val client             = mock[ElasticClient[Future]]
-  private implicit val rs        = mock[HttpClient[Future, Json]]
   private implicit val appConfig = new Settings(ConfigFactory.parseResources("app.conf").resolve()).appConfig
+  val label                      = ProjectLabel("bbp", "core")
+  val projectMeta = Project("name",
+                            "core",
+                            Map("ex" -> url"https://bbp.epfl.ch/nexus/data/".value, "resource" -> nxv.Resource.value),
+                            nxv.projects.value,
+                            1L,
+                            false,
+                            "uuid")
+  private implicit val labeledProject = LabeledProject(label, projectMeta, AccountRef("uuid"))
 
   before {
     Mockito.reset(resources)
-    Mockito.reset(client)
   }
 
   "An ElasticIndexer" when {
@@ -89,15 +94,7 @@ class ElasticIndexerSpec
         deprecated = false
       )
       val index   = s"${appConfig.elastic.indexPrefix}_${view.name}"
-      val indexer = new ElasticIndexer(client, view, resources)
-
-      "skip indexing a resource when it exists a higher revision on the indexer" in {
-        val res = ResourceF.simpleF(id, json, rev = 2L, schema = schema)
-        when(resources.fetch(id, None)).thenReturn(OptionT.some(res))
-        when(client.get[Json](index, doc, urlEncode(id.value), include = Set("_rev")))
-          .thenReturn(Future.successful(Json.obj("_rev" -> Json.fromLong(3L))))
-        indexer(ev).futureValue shouldEqual (())
-      }
+      val indexer = new ElasticIndexer(view, resources)
 
       "throw when the event resource is not found on the resources" in {
         when(resources.fetch(id, None)).thenReturn(OptionT.none[Future, Resource])
@@ -107,8 +104,6 @@ class ElasticIndexerSpec
       "index a resource when it does not exist" in {
         val res = ResourceF.simpleF(id, json, rev = 2L, schema = schema)
         when(resources.fetch(id, None)).thenReturn(OptionT.some(res))
-        when(client.get[Json](index, doc, urlEncode(id.value), include = Set("_rev")))
-          .thenReturn(Future.failed(new ElasticClientError(StatusCodes.NotFound, "something")))
 
         val elasticJson = Json
           .obj(
@@ -119,38 +114,12 @@ class ElasticIndexerSpec
             "_createdBy"       -> Json.fromString(appConfig.iam.baseUri.append(Path("anonymous")).toString()),
             "_deprecated"      -> Json.fromBoolean(false),
             "_rev"             -> Json.fromLong(2L),
+            "_self"            -> Json.fromString("http://127.0.0.1:8080/v1/resources/bbp/core/ex:schemaName/ex:resourceName"),
+            "_project"         -> Json.fromString("http://localhost:8080/admin/projects/bbp/core"),
             "_updatedAt"       -> Json.fromString(instantString),
             "_updatedBy"       -> Json.fromString(appConfig.iam.baseUri.append(Path("anonymous")).toString())
           )
-        when(client.create(index, doc, urlEncode(id.value), elasticJson)).thenReturn(Future.successful(()))
-        indexer(ev).futureValue shouldEqual (())
-        verify(client, times(1)).create(index, doc, urlEncode(id.value), elasticJson)
-
-      }
-
-      "index a resource when it exists a lower revision on the indexer" in {
-        val res = ResourceF.simpleF(id, json, rev = 2L, schema = schema)
-        when(resources.fetch(id, None)).thenReturn(OptionT.some(res))
-        when(client.get[Json](index, doc, urlEncode(id.value), include = Set("_rev")))
-          .thenReturn(Future.successful(Json.obj("_rev" -> Json.fromLong(1L))))
-
-        val elasticJson = Json
-          .obj(
-            "@id"              -> Json.fromString(id.value.show),
-            "_original_source" -> Json.fromString(json.noSpaces),
-            "_constrainedBy"   -> Json.fromString(schema.iri.show),
-            "_createdAt"       -> Json.fromString(instantString),
-            "_createdBy"       -> Json.fromString(appConfig.iam.baseUri.append(Path("anonymous")).toString()),
-            "_deprecated"      -> Json.fromBoolean(false),
-            "_rev"             -> Json.fromLong(2L),
-            "_updatedAt"       -> Json.fromString(instantString),
-            "_updatedBy"       -> Json.fromString(appConfig.iam.baseUri.append(Path("anonymous")).toString())
-          )
-
-        when(client.create(index, doc, urlEncode(id.value), elasticJson)).thenReturn(Future.successful(()))
-        indexer(ev).futureValue shouldEqual (())
-        verify(client, times(1)).create(index, doc, urlEncode(id.value), elasticJson)
-
+        indexer(ev).futureValue shouldEqual Option(BulkOp.Index(index, doc, id.value.asString, elasticJson))
       }
     }
 
@@ -168,35 +137,34 @@ class ElasticIndexerSpec
         deprecated = false
       )
       val index   = s"${appConfig.elastic.indexPrefix}_${view.name}"
-      val indexer = new ElasticIndexer(client, view, resources)
+      val indexer = new ElasticIndexer(view, resources)
 
       "skip indexing a resource when the schema is not on the view" in {
         val res = ResourceF.simpleF(id, json, rev = 2L, schema = schema)
         when(resources.fetch(id, None)).thenReturn(OptionT.some(res))
-        indexer(ev).futureValue shouldEqual (())
+        indexer(ev).futureValue shouldEqual None
       }
 
       "index a resource when it does not exist" in {
         val res = ResourceF.simpleF(id, json, rev = 2L, schema = Ref(nxv.Resource.value))
         when(resources.fetch(id, None)).thenReturn(OptionT.some(res))
-        when(client.get[Json](index, doc, urlEncode(id.value), include = Set("_rev")))
-          .thenReturn(Future.failed(new ElasticClientError(StatusCodes.NotFound, "something")))
 
         val elasticJson = Json
           .obj(
             "@id"              -> Json.fromString(id.value.show),
             "_original_source" -> Json.fromString(json.noSpaces),
-            "_constrainedBy"   -> Json.fromString("nxv:Resource"),
+            "_constrainedBy"   -> Json.fromString(nxv.Resource.value.show),
             "_createdAt"       -> Json.fromString(instantString),
             "_createdBy"       -> Json.fromString(appConfig.iam.baseUri.append(Path("anonymous")).toString()),
             "_deprecated"      -> Json.fromBoolean(false),
+            "_self"            -> Json.fromString("http://127.0.0.1:8080/v1/resources/bbp/core/resource/ex:resourceName"),
+            "_project"         -> Json.fromString("http://localhost:8080/admin/projects/bbp/core"),
             "_rev"             -> Json.fromLong(2L),
             "_updatedAt"       -> Json.fromString(instantString),
             "_updatedBy"       -> Json.fromString(appConfig.iam.baseUri.append(Path("anonymous")).toString())
           )
-        when(client.create(index, doc, urlEncode(id.value), elasticJson)).thenReturn(Future.successful(()))
-        indexer(ev.copy(schema = Ref(nxv.Resource.value))).futureValue shouldEqual (())
-        verify(client, times(1)).create(index, doc, urlEncode(id.value), elasticJson)
+        indexer(ev.copy(schema = Ref(nxv.Resource.value))).futureValue shouldEqual Option(
+          BulkOp.Index(index, doc, id.value.asString, elasticJson))
 
       }
     }
@@ -215,24 +183,28 @@ class ElasticIndexerSpec
         deprecated = false
       )
       val index   = s"${appConfig.elastic.indexPrefix}_${view.name}"
-      val indexer = new ElasticIndexer(client, view, resources)
+      val indexer = new ElasticIndexer(view, resources)
 
       "index a resource when it does not exist" in {
         val res = ResourceF.simpleF(id, json, rev = 2L, schema = schema).copy(tags = Map("two" -> 1L, "one" -> 2L))
-        when(resources.fetch(id, None)).thenReturn(OptionT.some(res))
-        when(client.get[Json](index, doc, urlEncode(id.value), include = Set("_rev")))
-          .thenReturn(Future.failed(new ElasticClientError(StatusCodes.NotFound, "something")))
+        when(resources.fetch(id, "one", None)).thenReturn(OptionT.some(res))
 
         val elasticJson = Json.obj("@id" -> Json.fromString(id.value.show), "key" -> Json.fromInt(2))
-        when(client.create(index, doc, urlEncode(id.value), elasticJson)).thenReturn(Future.successful(()))
-        indexer(ev).futureValue shouldEqual (())
-        verify(client, times(1)).create(index, doc, urlEncode(id.value), elasticJson)
+        indexer(ev).futureValue shouldEqual Option(BulkOp.Index(index, doc, id.value.asString, elasticJson))
       }
 
       "skip indexing a resource when it is not matching the tag defined on the view" in {
-        val res = ResourceF.simpleF(id, json, rev = 2L, schema = schema)
-        when(resources.fetch(id, None)).thenReturn(OptionT.some(res))
-        indexer(ev).futureValue shouldEqual (())
+        when(resources.fetch(id, "one", None)).thenReturn(OptionT.none[Future, Resource])
+        whenReady(indexer(ev).failed)(_ shouldBe a[NotFound])
+      }
+
+      "skip previous events from the same id" in {
+        val instant = clock.instant()
+        val updated = Updated(id, 3L, Set.empty, Json.obj("key" -> Json.fromString("updated")), instant, Anonymous)
+        val ev2 =
+          Created(id.copy(parent = ProjectRef("other")), 2L, schema, Set.empty, json, clock.instant(), Anonymous)
+
+        List(ev, updated, ev2).removeDupIds shouldEqual List(updated, ev2)
       }
     }
   }

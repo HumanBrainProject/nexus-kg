@@ -22,6 +22,8 @@ def wait(endpoint, up, attempt = 1) {
     }
 }
 
+def buildResults = [:]
+
 pipeline {
     agent { label 'slave-sbt' }
     options {
@@ -88,7 +90,24 @@ pipeline {
                 sleep 120 // service readiness delay is set to 2 minutes
                 openshiftVerifyService namespace: 'bbp-nexus-dev', svcName: 'kg', verbose: 'false'
                 wait(ENDPOINT, true)
-                build job: 'nexus/nexus-tests/master', parameters: [booleanParam(name: 'run', value: true)], wait: true
+            }
+        }
+        stage('Run integration tests') {
+            when {
+                expression { !isPR && !isRelease }
+            }
+            steps {
+                script {
+                    def jobBuild = build job:  'nexus/nexus-tests/master', parameters: [booleanParam(name: 'run', value: true)], wait: true
+                    def jobResult = jobBuild.getResult()
+                    echo "Integration tests of 'nexus-tests' returned result: ${jobResult}"
+
+                    s['nexus-tests']buildResult = jobResult
+
+                    if (jobResult != 'SUCCESS') {
+                        error("nexus-tests failed with result: ${jobResult}")
+                    }
+                }
             }
         }
         stage("Build & Publish Release") {
@@ -99,9 +118,24 @@ pipeline {
                 checkout scm
                 sh 'sbt releaseEarly universal:packageZipTarball'
                 sh "mv target/universal/kg*.tgz ./kg.tgz"
-                sh "oc start-build kg-build --from-file=kg.tgz --follow"
+                echo "Pushing to internal image registry..."
+                sh "oc start-build kg-build --from-file=kg.tgz --wait"
                 openshiftTag srcStream: 'kg', srcTag: 'latest', destStream: 'kg', destTag: version.substring(1), verbose: 'false'
+                echo "Pushing to Docker Hub..."
+                sh "oc start-build nexus-kg-build --from-file=kg.tgz --wait"
             }
+        }
+    }
+    post {
+        always {
+            echo "Build results: ${buildResults.toString()}"
+        }
+        success {
+            echo "All builds completed OK"
+        }
+        failure {
+            echo "A job failed"
+            mail bcc: '', body: "<b>Build results for ${currentBuild.displayName.toString()}</b><br><br>Current build: ${currentBuild.displayName.toString()} ${currentBuild.results.toString()} <br>Integration-Tests build ${results.toString()}", cc: '', charset: 'UTF-8', from: '', mimeType: 'text/html', replyTo: '', subject: "ERROR CI: Project name -> ${currentBuild.displayName.toString()}", to: "${env.NOTIFICATION_EMAIL}";
         }
     }
 }

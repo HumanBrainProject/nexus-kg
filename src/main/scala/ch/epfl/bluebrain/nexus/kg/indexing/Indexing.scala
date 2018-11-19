@@ -1,24 +1,29 @@
 package ch.epfl.bluebrain.nexus.kg.indexing
 
-import java.util.UUID
 import java.util.regex.Pattern.quote
 
 import akka.actor.{ActorRef, ActorSystem}
 import akka.kafka.ConsumerSettings
+import akka.stream.ActorMaterializer
 import ch.epfl.bluebrain.nexus.admin.client.types.KafkaEvent._
 import ch.epfl.bluebrain.nexus.admin.client.types.{Account, KafkaEvent, Project}
+import ch.epfl.bluebrain.nexus.commons.es.client.ElasticClient
+import ch.epfl.bluebrain.nexus.commons.forward.client.ForwardClient
 import ch.epfl.bluebrain.nexus.commons.http.HttpClient
+import ch.epfl.bluebrain.nexus.commons.http.JsonLdCirceSupport._
+import ch.epfl.bluebrain.nexus.commons.sparql.client.BlazegraphClient
 import ch.epfl.bluebrain.nexus.commons.test.Resources._
-import ch.epfl.bluebrain.nexus.commons.types.RetriableErr
-import ch.epfl.bluebrain.nexus.kg.RuntimeErr.IllegalEventType
 import ch.epfl.bluebrain.nexus.kg.async.ProjectViewCoordinator.Msg
 import ch.epfl.bluebrain.nexus.kg.async.{DistributedCache, ProjectViewCoordinator}
 import ch.epfl.bluebrain.nexus.kg.config.AppConfig
 import ch.epfl.bluebrain.nexus.kg.config.Vocabulary.nxv
-import ch.epfl.bluebrain.nexus.kg.indexing.View.{ElasticView, SparqlView}
+import ch.epfl.bluebrain.nexus.kg.directives.LabeledProject
+import ch.epfl.bluebrain.nexus.kg.indexing.View.{ElasticView, SingleView, SparqlView}
+import ch.epfl.bluebrain.nexus.kg.indexing.v0.MigrationIndexer
 import ch.epfl.bluebrain.nexus.kg.resolve.Resolver.InProjectResolver
 import ch.epfl.bluebrain.nexus.kg.resources._
 import ch.epfl.bluebrain.nexus.service.kafka.KafkaConsumer
+import io.circe.Json
 import monix.eval.Task
 import monix.execution.Scheduler.Implicits.global
 import org.apache.jena.query.ResultSet
@@ -33,114 +38,61 @@ private class Indexing(resources: Resources[Task], cache: DistributedCache[Task]
 
   private val consumerSettings = ConsumerSettings(as, new StringDeserializer, new StringDeserializer)
 
+  private val elasticUUID = "684bd815-9273-46f4-ac1c-0383d4a98254"
+  private val sparqlUUID  = "d88b71d2-b8a4-4744-bf22-2d99ef5bd26b"
+
   private val defaultEsMapping =
     jsonContentOf("/elastic/mapping.json", Map(quote("{{docType}}") -> config.elastic.docType))
 
-  def startAccountStream(): Unit = {
+  def startKafkaStream(): Unit = {
+
+    // format: off
+    def defaultEsView(projectRef: ProjectRef): ElasticView =
+      ElasticView(defaultEsMapping, Set.empty, None, includeMetadata = true, sourceAsText = true, projectRef, nxv.defaultElasticIndex.value, elasticUUID, 1L, deprecated = false)
+    // format: on
+
+    def defaultSparqlView(projectRef: ProjectRef): SparqlView =
+      SparqlView(projectRef, nxv.defaultSparqlIndex.value, sparqlUUID, 1L, deprecated = false)
+
+    def defaultInProjectResolver(projectRef: ProjectRef): InProjectResolver =
+      InProjectResolver(projectRef, nxv.InProject.value, 1L, deprecated = false, 1)
 
     def index(event: KafkaEvent): Future[Unit] = {
       val update = event match {
         case OrganizationCreated(_, label, uuid, rev, _, org) =>
-          cache.addAccount(AccountRef(uuid), Account(org.name, rev, label, deprecated = false, uuid), updateRev = false)
+          cache.addAccount(AccountRef(uuid), Account(org.name, rev, label, deprecated = false, uuid))
+
         case OrganizationUpdated(_, label, uuid, rev, _, org) =>
-          cache.addAccount(AccountRef(uuid), Account(org.name, rev, label, deprecated = false, uuid), updateRev = true)
+          cache.addAccount(AccountRef(uuid), Account(org.name, rev, label, deprecated = false, uuid))
+
         case OrganizationDeprecated(_, uuid, rev, _) =>
           cache.deprecateAccount(AccountRef(uuid), rev)
-        case _: ProjectCreated    => throw IllegalEventType("ProjectCreated", "Organization")
-        case _: ProjectUpdated    => throw IllegalEventType("ProjectUpdated", "Organization")
-        case _: ProjectDeprecated => throw IllegalEventType("ProjectDeprecated", "Organization")
-      }
-      update.flatMap { updated =>
-        if (updated) Task.unit
-        else Task.raiseError(new RetriableErr(s"Failed to update account '${event.id}'"))
-      }.runAsync
-    }
 
-    KafkaConsumer.start(consumerSettings, index, config.kafka.accountTopic, "account-events", committable = false, None)
-    ()
-  }
-
-  def startProjectStream(): Unit = {
-
-    def processResult(accountRef: AccountRef, projectRef: ProjectRef): Boolean => Task[Unit] = {
-      case true =>
-        coordinator ! Msg(accountRef, projectRef)
-        Task.unit
-      case false =>
-        Task.raiseError(new RetriableErr(s"Failed to update project '${projectRef.id}'"))
-    }
-
-    def index(event: KafkaEvent): Future[Unit] = {
-      val update = event match {
         case ProjectCreated(_, label, uuid, orgUUid, rev, _, proj) =>
-          cache
-            .addProject(
-              ProjectRef(uuid),
-              AccountRef(orgUUid),
-              Project(proj.name, label, proj.prefixMappings, proj.base, rev, deprecated = false, uuid),
-              updateRev = false
-            )
-            .flatMap {
-              case true =>
-                cache.addResolver(ProjectRef(uuid),
-                                  InProjectResolver(ProjectRef(uuid), nxv.InProject.value, 1L, deprecated = false, 1))
-              case false => Task(false)
-            }
-            .flatMap {
-              case true =>
-                for {
-                  elastic <- cache.addView(
-                    ProjectRef(uuid),
-                    ElasticView(
-                      defaultEsMapping,
-                      Set.empty,
-                      None,
-                      includeMetadata = true,
-                      sourceAsText = true,
-                      ProjectRef(uuid),
-                      nxv.defaultElasticIndex.value,
-                      UUID.randomUUID().toString,
-                      1L,
-                      deprecated = false
-                    ),
-                    true
-                  )
-                  sparql <- cache.addView(
-                    ProjectRef(uuid),
-                    SparqlView(
-                      ProjectRef(uuid),
-                      nxv.defaultSparqlIndex.value,
-                      UUID.randomUUID().toString,
-                      1L,
-                      deprecated = false
-                    ),
-                    true
-                  )
-                } yield elastic && sparql
-              case false => Task(false)
-            }
-            .flatMap(processResult(AccountRef(orgUUid), ProjectRef(uuid)))
+          val projectRef = ProjectRef(uuid)
+          val accountRef = AccountRef(orgUUid)
+          val project    = Project(proj.name, label, proj.prefixMappings, proj.base, rev, deprecated = false, uuid)
+          for {
+            _ <- cache.addProject(projectRef, accountRef, project)
+            _ <- cache.addResolver(projectRef, defaultInProjectResolver(projectRef))
+            _ <- cache.addView(ProjectRef(uuid), defaultEsView(projectRef))
+            _ <- cache.addView(ProjectRef(uuid), defaultSparqlView(projectRef))
+            _ = coordinator ! Msg(AccountRef(orgUUid), ProjectRef(uuid))
+          } yield ()
+
         case ProjectUpdated(_, label, uuid, orgUUid, rev, _, proj) =>
-          cache
-            .addProject(
-              ProjectRef(uuid),
-              AccountRef(orgUUid),
-              Project(proj.name, label, proj.prefixMappings, proj.base, rev, deprecated = false, uuid),
-              updateRev = true
-            )
-            .flatMap(processResult(AccountRef(orgUUid), ProjectRef(uuid)))
+          val projectRef = ProjectRef(uuid)
+          val accountRef = AccountRef(orgUUid)
+          val project    = Project(proj.name, label, proj.prefixMappings, proj.base, rev, deprecated = false, uuid)
+          cache.addProject(projectRef, accountRef, project)
+
         case ProjectDeprecated(_, uuid, orgUUid, rev, _) =>
-          cache
-            .deprecateProject(ProjectRef(uuid), AccountRef(orgUUid), rev)
-            .flatMap(processResult(AccountRef(orgUUid), ProjectRef(uuid)))
-        case _: OrganizationCreated    => throw IllegalEventType("OrganizationCreated", "Project")
-        case _: OrganizationUpdated    => throw IllegalEventType("OrganizationUpdated", "Project")
-        case _: OrganizationDeprecated => throw IllegalEventType("OrganizationDeprecated", "Project")
+          cache.deprecateProject(ProjectRef(uuid), AccountRef(orgUUid), rev)
       }
       update.runAsync
     }
 
-    KafkaConsumer.start(consumerSettings, index, config.kafka.projectTopic, "project-events", committable = false, None)
+    KafkaConsumer.start(consumerSettings, index, config.kafka.adminTopic, "admin-events", committable = false, None)
     ()
   }
 
@@ -152,6 +104,13 @@ private class Indexing(resources: Resources[Task], cache: DistributedCache[Task]
   def startViewStream(): Unit = {
     ViewIndexer.start(resources, cache)
     ()
+  }
+
+  def startMigrationStream(): Unit = {
+    val migration = config.kafka.migration
+    if (migration.enabled) {
+      MigrationIndexer.start(resources.repo, migration)
+    }
   }
 }
 
@@ -167,23 +126,37 @@ object Indexing {
     * </ul>
     *
     * @param resources the resources operations
-    * @param cache the distributed cache
+    * @param cache     the distributed cache
     */
   def start(resources: Resources[Task], cache: DistributedCache[Task])(implicit as: ActorSystem,
                                                                        ucl: HttpClient[Task, ResultSet],
                                                                        config: AppConfig): Unit = {
 
-    def selector(view: View): ActorRef = view match {
-      case v: ElasticView => ElasticIndexer.start(v, resources)
-      case v: SparqlView  => SparqlIndexer.start(v, resources)
+    implicit val mt            = ActorMaterializer()
+    implicit val ul            = HttpClient.taskHttpClient
+    implicit val jsonClient    = HttpClient.withTaskUnmarshaller[Json]
+    implicit val elasticClient = ElasticClient[Task](config.elastic.base)
+    implicit val forwardClient = ForwardClient(config.http.publicUri)
+
+    def selector(view: SingleView, labeledProject: LabeledProject): ActorRef = view match {
+      case v: ElasticView => ElasticIndexer.start(v, resources, labeledProject)
+      case v: SparqlView  => SparqlIndexer.start(v, resources, labeledProject)
     }
 
-    val coordinator = ProjectViewCoordinator.start(cache, selector, None, config.cluster.shards)
+    def onStop(view: SingleView): Task[Boolean] = view match {
+      case v: ElasticView =>
+        elasticClient.deleteIndex(v.index)
+      case _: SparqlView =>
+        BlazegraphClient[Task](config.sparql.base, view.name, config.sparql.akkaCredentials).deleteNamespace
+    }
+    InstanceForwardIndexer.start()
+    val coordinator = ProjectViewCoordinator.start(cache, selector, onStop, None, config.cluster.shards)
     val indexing    = new Indexing(resources, cache, coordinator)
-    indexing.startAccountStream()
-    indexing.startProjectStream()
+    indexing.startKafkaStream()
     indexing.startResolverStream()
     indexing.startViewStream()
+    indexing.startMigrationStream()
+
   }
 
 }

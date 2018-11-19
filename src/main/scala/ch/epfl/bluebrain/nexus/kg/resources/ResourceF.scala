@@ -4,16 +4,21 @@ import java.time.{Clock, Instant}
 
 import ch.epfl.bluebrain.nexus.iam.client.types.Identity
 import ch.epfl.bluebrain.nexus.iam.client.types.Identity.Anonymous
-import ch.epfl.bluebrain.nexus.kg.config.AppConfig.IamConfig
+import ch.epfl.bluebrain.nexus.kg.config.AppConfig
+import ch.epfl.bluebrain.nexus.kg.config.AppConfig._
 import ch.epfl.bluebrain.nexus.kg.config.Schemas._
-import ch.epfl.bluebrain.nexus.kg.config.Vocabulary.nxv
+import ch.epfl.bluebrain.nexus.kg.config.Vocabulary.{dcat, nxv}
+import ch.epfl.bluebrain.nexus.kg.directives.LabeledProject
 import ch.epfl.bluebrain.nexus.kg.resources.attachment.Attachment.BinaryAttributes
 import ch.epfl.bluebrain.nexus.kg.resources.syntax._
-import ch.epfl.bluebrain.nexus.rdf.Graph.Triple
+import ch.epfl.bluebrain.nexus.rdf.Graph._
 import ch.epfl.bluebrain.nexus.rdf.Iri.AbsoluteIri
 import ch.epfl.bluebrain.nexus.rdf.Node.{IriNode, IriOrBNode}
 import ch.epfl.bluebrain.nexus.rdf.Vocabulary._
+import ch.epfl.bluebrain.nexus.rdf.encoder.GraphEncoder
+import ch.epfl.bluebrain.nexus.rdf.encoder.GraphEncoder.GraphResult
 import ch.epfl.bluebrain.nexus.rdf.syntax.circe._
+import ch.epfl.bluebrain.nexus.rdf.syntax.circe.context._
 import ch.epfl.bluebrain.nexus.rdf.syntax.nexus._
 import ch.epfl.bluebrain.nexus.rdf.syntax.node._
 import ch.epfl.bluebrain.nexus.rdf.{Graph, Node}
@@ -69,29 +74,64 @@ final case class ResourceF[P, S, A](
   lazy val node: IriNode = IriNode(id.value)
 
   /**
-    * Computes the metadata graph for this resource.
+    * Computes the metadata triples for this resource.
     */
-  def metadata(implicit ev: S =:= Ref, iamConfig: IamConfig): Graph =
-    Graph(
-      Set[Triple](
-        (node, nxv.rev, rev),
-        (node, nxv.deprecated, deprecated),
-        (node, nxv.createdAt, created),
-        (node, nxv.updatedAt, updated),
-        (node, nxv.createdBy, createdBy.id),
-        (node, nxv.updatedBy, updatedBy.id),
-        (node, nxv.constrainedBy, ev(schema).iri)
-      ))
+  def metadata(implicit config: AppConfig, wrapped: LabeledProject, ev: S =:= Ref): Set[Triple] = {
+
+    def triplesFor(at: BinaryAttributes): Set[Triple] = {
+      val blank       = Node.blank
+      val blankDigest = Node.blank
+      Set(
+        (blankDigest, nxv.algorithm, at.digest.algorithm),
+        (blankDigest, nxv.value, at.digest.value),
+        (blank, rdf.tpe, dcat.Distribution),
+        (blank, dcat.byteSize, at.byteSize),
+        (blank, nxv.digest, blankDigest),
+        (blank, dcat.mediaType, at.mediaType),
+        (blank, nxv.originalFileName, at.filename),
+        (blank, dcat.downloadURL, AccessId(id.value, schema.iri) + "attachments" + at.filename),
+        (IriNode(id.value), dcat.distribution, blank)
+      )
+    }
+    val schemaIri = ev(schema).iri
+    Set[Triple](
+      (node, nxv.rev, rev),
+      (node, nxv.deprecated, deprecated),
+      (node, nxv.createdAt, created),
+      (node, nxv.updatedAt, updated),
+      (node, nxv.createdBy, createdBy.id),
+      (node, nxv.updatedBy, updatedBy.id),
+      (node, nxv.constrainedBy, schemaIri),
+      (node, nxv.project, wrapped.label.projectAccessId),
+      (node, nxv.self, AccessId(id.value, schemaIri))
+    ) ++ attachments.flatMap(triplesFor)
+  }
 
   /**
-    * The type graph of this resource.
+    * The triples for the type of this resource.
     */
-  lazy val typeGraph: Graph = types.foldLeft(Graph()) {
-    case (g, tpe) => g add (node, rdf.tpe, tpe)
-  }
+  lazy val typeTriples: Set[Triple] = types.map(tpe => (node, rdf.tpe, tpe): Triple)
 }
 
 object ResourceF {
+  private val metaPredicates = Set[IriNode](nxv.rev,
+                                            nxv.deprecated,
+                                            nxv.createdAt,
+                                            nxv.updatedAt,
+                                            nxv.createdBy,
+                                            nxv.updatedBy,
+                                            nxv.constrainedBy,
+                                            nxv.project,
+                                            nxv.self)
+
+  /**
+    * Removes the metadata triples from the graph centered on the provided subject ''id''
+    *
+    * @param id the subject
+    * @return a new [[Graph]] without the metadata triples
+    */
+  def removeMetadata(graph: Graph, id: IriOrBNode): Graph =
+    graph.remove(id, metaPredicates.contains)
 
   /**
     * A default resource value type.
@@ -101,11 +141,19 @@ object ResourceF {
     * @param graph  a graph representation of a resource
     */
   final case class Value(source: Json, ctx: Json, graph: Graph) {
-    def primaryNode: Option[IriOrBNode] =
-      source.id.map(IriNode(_)) orElse graph.primaryNode orElse Option(graph.triples.isEmpty).collect {
+    def primaryNode: Option[IriOrBNode] = {
+      val resolvedSource = source appendContextOf Json.obj("@context" -> ctx)
+      resolvedSource.id.map(IriNode(_)) orElse graph.primaryNode orElse Option(graph.triples.isEmpty).collect {
         case true => Node.blank
       }
+    }
 
+    def map[A](value: A, f: Json => Json)(implicit enc: GraphEncoder[A]): Value = {
+      val GraphResult(s, graph) = enc(value)
+      val graphNoMeta           = graph.removeMetadata(s)
+      val json                  = graphNoMeta.asJson(Json.obj("@context" -> ctx), s).getOrElse(graphNoMeta.asJson)
+      this.copy(source = f(json), graph = graphNoMeta)
+    }
   }
 
   /**

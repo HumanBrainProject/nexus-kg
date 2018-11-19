@@ -1,38 +1,52 @@
 package ch.epfl.bluebrain.nexus.kg
 
+import java.nio.file.Paths
 import java.time.Clock
 
 import akka.actor.{ActorSystem, Address, AddressFromURIString}
 import akka.cluster.Cluster
 import akka.event.Logging
 import akka.http.scaladsl.Http
+import akka.http.scaladsl.model.HttpMethods._
+import akka.http.scaladsl.model.headers.Location
 import akka.http.scaladsl.server.Directives._
+import akka.http.scaladsl.server.Route
 import akka.stream.ActorMaterializer
 import akka.util.Timeout
 import ch.epfl.bluebrain.nexus.admin.client.AdminClient
-import ch.epfl.bluebrain.nexus.commons.es.client.ElasticClient
+import ch.epfl.bluebrain.nexus.commons.es.client.{ElasticClient, ElasticDecoder}
 import ch.epfl.bluebrain.nexus.commons.http.HttpClient
 import ch.epfl.bluebrain.nexus.commons.sparql.client.BlazegraphClient
 import ch.epfl.bluebrain.nexus.commons.sparql.client.SparqlCirceSupport._
 import ch.epfl.bluebrain.nexus.commons.types.search.QueryResults
 import ch.epfl.bluebrain.nexus.iam.client.{IamClient, IamUri}
+import ch.epfl.bluebrain.nexus.kg.acls.{AclsActor, AclsOps}
 import ch.epfl.bluebrain.nexus.kg.async.DistributedCache
 import ch.epfl.bluebrain.nexus.kg.config.AppConfig.{ElasticConfig, SparqlConfig}
 import ch.epfl.bluebrain.nexus.kg.config.Settings
 import ch.epfl.bluebrain.nexus.kg.indexing.Indexing
 import ch.epfl.bluebrain.nexus.kg.persistence.TaskAggregate
 import ch.epfl.bluebrain.nexus.kg.resolve.ProjectResolution
-import ch.epfl.bluebrain.nexus.kg.resources.Repo.Agg
 import ch.epfl.bluebrain.nexus.kg.resources.attachment.AttachmentStore
 import ch.epfl.bluebrain.nexus.kg.resources.attachment.AttachmentStore.{AkkaIn, AkkaOut}
 import ch.epfl.bluebrain.nexus.kg.resources.{Repo, Resources}
-import ch.epfl.bluebrain.nexus.kg.routes.{Clients, ResourcesRoutes, ServiceDescriptionRoutes}
+import ch.epfl.bluebrain.nexus.kg.routes.AppInfoRoutes.HealthStatusGroup
+import ch.epfl.bluebrain.nexus.kg.routes.HealthStatus.{
+  AdminHealthStatus,
+  CassandraHealthStatus,
+  ClusterHealthStatus,
+  ElasticSearchHealthStatus,
+  IamHealthStatus,
+  SparqlHealthStatus
+}
+import ch.epfl.bluebrain.nexus.kg.routes.{AppInfoRoutes, Clients, CombinedRoutes}
 import ch.epfl.bluebrain.nexus.service.http.directives.PrefixDirectives._
 import ch.epfl.bluebrain.nexus.sourcing.akka.{ShardingAggregate, SourcingAkkaSettings}
+import ch.megard.akka.http.cors.scaladsl.CorsDirectives.{cors, corsRejectionHandler}
+import ch.megard.akka.http.cors.scaladsl.settings.CorsSettings
 import com.github.jsonldjava.core.DocumentLoader
-import com.typesafe.config.ConfigFactory
+import com.typesafe.config.{Config, ConfigFactory}
 import io.circe.Json
-import io.circe.generic.auto._
 import kamon.Kamon
 import kamon.system.SystemMetrics
 import monix.eval.Task
@@ -46,11 +60,25 @@ import scala.util.{Failure, Success}
 // $COVERAGE-OFF$
 object Main {
 
-  @SuppressWarnings(Array("UnusedMethodParameter"))
-  def main(args: Array[String]): Unit = {
+  def loadConfig(): Config = {
+    val cfg = sys.env.get("KG_CONFIG_FILE") orElse sys.props.get("kg.config.file") map { str =>
+      val file = Paths.get(str).toAbsolutePath.toFile
+      ConfigFactory.parseFile(file)
+    } getOrElse ConfigFactory.empty()
+    (cfg withFallback ConfigFactory.load()).resolve()
+  }
+
+  def setupMonitoring(config: Config): Unit = {
+    Kamon.reconfigure(config)
     SystemMetrics.startCollecting()
     Kamon.loadReportersFromConfig()
-    val config             = ConfigFactory.load()
+  }
+
+  @SuppressWarnings(Array("UnusedMethodParameter"))
+  def main(args: Array[String]): Unit = {
+    val config = loadConfig()
+    setupMonitoring(config)
+
     implicit val appConfig = Settings(config).appConfig
 
     implicit val as = ActorSystem(appConfig.description.fullName, config)
@@ -61,6 +89,7 @@ object Main {
     implicit val utClient   = HttpClient.taskHttpClient
     implicit val jsonClient = HttpClient.withTaskUnmarshaller[Json]
     implicit val rsClient   = HttpClient.withTaskUnmarshaller[ResultSet]
+    implicit val esDecoders = ElasticDecoder[Json]
     implicit val qrClient   = HttpClient.withTaskUnmarshaller[QueryResults[Json]]
 
     def clients(implicit elasticConfig: ElasticConfig, sparqlConfig: SparqlConfig): Clients[Task] = {
@@ -85,7 +114,7 @@ object Main {
 
     val sourcingSettings = SourcingAkkaSettings(journalPluginId = appConfig.persistence.queryJournalPlugin)
 
-    val resourceAggregate: Agg[Task] =
+    val resourceAggregate =
       TaskAggregate.fromFuture(ShardingAggregate("resources", sourcingSettings)(Repo.initial, Repo.next, Repo.eval))
     implicit val repo              = Repo(resourceAggregate, clock)
     implicit val attConfig         = appConfig.attachments
@@ -94,20 +123,37 @@ object Main {
     implicit val store             = new AttachmentStore[Task, AkkaIn, AkkaOut]
     implicit val indexers          = clients
     implicit val cache             = DistributedCache.task()
-    implicit val saToken           = appConfig.iam.serviceAccountToken
-    implicit val projectResolution = ProjectResolution.task(cache, clients.adminClient)
+    implicit val iam               = clients.iamClient
+    implicit val aclsOps           = new AclsOps(AclsActor.start)
+    implicit val projectResolution = ProjectResolution.task(cache, aclsOps)
     val resources: Resources[Task] = Resources[Task]
-    val resourceRoutes             = new ResourcesRoutes(resources).routes
+    val resourceRoutes             = CombinedRoutes(resources)
     val apiRoutes                  = uriPrefix(appConfig.http.publicUri)(resourceRoutes)
-    val serviceDesc                = ServiceDescriptionRoutes(appConfig.description).routes
+    val healthStatusGroup = HealthStatusGroup(
+      new CassandraHealthStatus(),
+      new ClusterHealthStatus(cluster),
+      new IamHealthStatus(iam),
+      new AdminHealthStatus(clients.adminClient),
+      new ElasticSearchHealthStatus(clients.elastic),
+      new SparqlHealthStatus(clients.sparql)
+    )
+    val appInfoRoutes = AppInfoRoutes(appConfig.description, healthStatusGroup).routes
 
     val logger = Logging(as, getClass)
     System.setProperty(DocumentLoader.DISALLOW_REMOTE_CONTEXT_LOADING, "true")
+
+    val corsSettings = CorsSettings.defaultSettings
+      .withAllowedMethods(List(GET, PUT, POST, DELETE, OPTIONS, HEAD))
+      .withExposedHeaders(List(Location.name))
+
     cluster.registerOnMemberUp {
       logger.info("==== Cluster is Live ====")
 
+      val routes: Route =
+        handleRejections(corsRejectionHandler)(cors(corsSettings)(apiRoutes ~ appInfoRoutes))
+
       val httpBinding = {
-        Http().bindAndHandle(apiRoutes ~ serviceDesc, appConfig.http.interface, appConfig.http.port)
+        Http().bindAndHandle(routes, appConfig.http.interface, appConfig.http.port)
       }
       httpBinding onComplete {
         case Success(binding) =>

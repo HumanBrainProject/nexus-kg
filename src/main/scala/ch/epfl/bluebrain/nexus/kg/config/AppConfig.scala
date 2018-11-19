@@ -11,9 +11,15 @@ import ch.epfl.bluebrain.nexus.iam.client.types.AuthToken
 import ch.epfl.bluebrain.nexus.kg.config.AppConfig._
 import ch.epfl.bluebrain.nexus.kg.config.Contexts._
 import ch.epfl.bluebrain.nexus.kg.config.Schemas._
+import ch.epfl.bluebrain.nexus.kg.config.Vocabulary._
+import ch.epfl.bluebrain.nexus.kg.resources.ProjectRef
+import ch.epfl.bluebrain.nexus.rdf.Iri.AbsoluteIri
+import ch.epfl.bluebrain.nexus.service.indexer.retryer.RetryStrategy
+import ch.epfl.bluebrain.nexus.service.indexer.retryer.RetryStrategy.Backoff
 import ch.epfl.bluebrain.nexus.service.kamon.directives.TracingDirectives
 
 import scala.concurrent.duration.FiniteDuration
+import scala.util.matching.Regex
 
 /**
   * Application
@@ -28,6 +34,7 @@ import scala.concurrent.duration.FiniteDuration
   * @param sparql      Sparql endpoint configuration
   * @param elastic     ElasticSearch endpoint configuration
   * @param pagination  Pagination configuration
+  * @param indexing    Indexing configuration
   */
 final case class AppConfig(description: Description,
                            http: HttpConfig,
@@ -39,6 +46,7 @@ final case class AppConfig(description: Description,
                            sparql: SparqlConfig,
                            elastic: ElasticConfig,
                            pagination: PaginationConfig,
+                           indexing: IndexingConfig,
                            kafka: KafkaConfig)
 
 object AppConfig {
@@ -105,17 +113,34 @@ object AppConfig {
   /**
     * IAM config
     *
-    * @param baseUri base URI of IAM service
+    * @param baseUri              base URI of IAM service
+    * @param serviceAccountToken  the service account token to execute calls to IAM
+    * @param cacheRefreshInterval the maximum tolerated inactivity period after which the cached ACLs will be refreshed
     */
-  final case class IamConfig(baseUri: Uri, serviceAccountToken: Option[AuthToken])
+  final case class IamConfig(baseUri: Uri, serviceAccountToken: Option[AuthToken], cacheRefreshInterval: FiniteDuration)
 
   /**
     * Kafka config
     *
-    * @param accountTopic the topic for account events
-    * @param projectTopic the topic for project events
+    * @param adminTopic the topic for account and project events
+    * @param migration  the v0 events migration config
     */
-  final case class KafkaConfig(accountTopic: String, projectTopic: String)
+  final case class KafkaConfig(adminTopic: String, migration: MigrationConfig)
+
+  /**
+    * Migration config
+    *
+    * @param enabled    whether the v0 event migration is enabled
+    * @param topic      the Kafka topic to read v0 events from
+    * @param baseUri    the base URI for v0 ids
+    * @param projectRef the target project reference, where events will be migrated to
+    * @param pattern    the regex pattern to select event ids that will be migrated
+    */
+  final case class MigrationConfig(enabled: Boolean,
+                                   topic: String,
+                                   baseUri: AbsoluteIri,
+                                   projectRef: ProjectRef,
+                                   pattern: Regex)
 
   /**
     * Collection of configurable settings specific to the Sparql indexer.
@@ -155,6 +180,26 @@ object AppConfig {
     val pagination: Pagination = Pagination(from, size)
   }
 
+  /**
+    * Retry configuration with Exponential backoff
+    *
+    * @param maxCount     the maximum number of times an index function is retried
+    * @param maxDuration  the maximum amount of time to wait between two retries
+    * @param randomFactor the jitter added between retries
+    */
+  final case class Retry(maxCount: Int, maxDuration: FiniteDuration, randomFactor: Double) {
+    val strategy: RetryStrategy = Backoff(maxDuration, randomFactor)
+  }
+
+  /**
+    * Indexing configuration
+    *
+    * @param batch        the maximum number of events taken on each batch
+    * @param batchTimeout the maximum amount of time to wait for the number of events to be taken on each batch
+    * @param retry        the retry configuration when indexing failures
+    */
+  final case class IndexingConfig(batch: Int, batchTimeout: FiniteDuration, retry: Retry)
+
   val iriResolution = Map(
     tagCtxUri         -> tagCtx,
     resourceCtxUri    -> resourceCtx,
@@ -173,19 +218,20 @@ object AppConfig {
       "code",
       "message",
       "details",
-      "total",
-      "maxScore",
-      "results",
-      "resultId",
-      "score",
+      nxv.total.prefix,
+      nxv.maxScore.prefix,
+      nxv.results.prefix,
+      nxv.score.prefix,
       "",
-      "_constrainedBy",
-      "_createdAt",
-      "_createdBy",
-      "_updatedAt",
-      "_updatedBy",
-      "_rev",
-      "_deprecated"
+      nxv.self.prefix,
+      nxv.constrainedBy.prefix,
+      nxv.project.prefix,
+      nxv.createdAt.prefix,
+      nxv.createdBy.prefix,
+      nxv.updatedAt.prefix,
+      nxv.updatedBy.prefix,
+      nxv.rev.prefix,
+      nxv.deprecated.prefix
     ))
 
   val tracing = new TracingDirectives()
@@ -196,5 +242,7 @@ object AppConfig {
   implicit def toPagination(implicit appConfig: AppConfig): PaginationConfig   = appConfig.pagination
   implicit def toHttp(implicit appConfig: AppConfig): HttpConfig               = appConfig.http
   implicit def toIam(implicit appConfig: AppConfig): IamConfig                 = appConfig.iam
+  implicit def toAdmin(implicit appConfig: AppConfig): AdminConfig             = appConfig.admin
+  implicit def toIndexing(implicit appConfig: AppConfig): IndexingConfig       = appConfig.indexing
 
 }

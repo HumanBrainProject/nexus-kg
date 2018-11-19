@@ -78,7 +78,7 @@ class ResolverIndexerSpec
       when(resources.fetch(id, None)).thenReturn(OptionT.some(resource))
       when(resources.materialize(resource)).thenReturn(EitherT.rightT[Future, Rejection](resourceV))
       when(cache.accountRef(projectRef)).thenReturn(Future.successful(Option(accountRef)))
-      when(cache.applyResolver(projectRef, resolver)).thenReturn(Future.successful(true))
+      when(cache.applyResolver(projectRef, resolver)).thenReturn(Future.successful(()))
 
       indexer(ev).futureValue shouldEqual (())
       verify(cache, times(1)).applyResolver(projectRef, resolver)
@@ -97,11 +97,11 @@ class ResolverIndexerSpec
       verify(cache, times(0)).applyResolver(projectRef, resolver)
     }
 
-    "skip indexing a resolver when the accountRef cannot be fetched from the cache" in {
+    "raise RetriableError when the accountRef cannot be fetched from the cache" in {
       when(resources.fetch(id, None)).thenReturn(OptionT.some(resource))
       when(resources.materialize(resource)).thenReturn(EitherT.rightT[Future, Rejection](resourceV))
       when(cache.accountRef(projectRef)).thenReturn(Future.successful(None))
-      indexer(ev).futureValue shouldEqual (())
+      whenReady(indexer(ev).failed)(_ shouldBe a[RetriableErr])
       verify(cache, times(0)).applyResolver(projectRef, resolver)
     }
 

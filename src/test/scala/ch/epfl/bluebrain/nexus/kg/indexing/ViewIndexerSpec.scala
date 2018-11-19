@@ -70,13 +70,13 @@ class ViewIndexerSpec
     val json      = jsonContentOf("/view/sparqlview.json").appendContextOf(viewCtx)
     val resource  = ResourceF.simpleF(id, json, rev = 2, schema = schema, types = types)
     val resourceV = simpleV(id, json, rev = 2, schema = schema, types = types)
-    val view      = View(resourceV).value
+    val view      = View(resourceV).right.value
     val ev        = Created(id, 2L, schema, types, json, clock.instant(), Anonymous)
 
     "index a view" in {
       when(resources.fetch(id, None)).thenReturn(OptionT.some(resource))
       when(resources.materialize(resource)).thenReturn(EitherT.rightT[Future, Rejection](resourceV))
-      when(cache.applyView(projectRef, view)).thenReturn(Future.successful(true))
+      when(cache.applyView(projectRef, view)).thenReturn(Future.successful(()))
 
       indexer(ev).futureValue shouldEqual (())
       verify(cache, times(1)).applyView(projectRef, view)

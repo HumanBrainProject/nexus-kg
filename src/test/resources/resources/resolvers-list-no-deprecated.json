@@ -1,11 +1,11 @@
 {
   "@context": [
-    "https://bluebrain.github.io/nexus/contexts/search",
-    "https://bluebrain.github.io/nexus/contexts/resource",
-    "https://bluebrain.github.io/nexus/contexts/resolver"
+    "https://bluebrain.github.io/nexus/contexts/search.json",
+    "https://bluebrain.github.io/nexus/contexts/resource.json",
+    "https://bluebrain.github.io/nexus/contexts/resolver.json"
   ],
-  "total": 2,
-  "results": [
+  "_total": 3,
+  "_results": [
     {
       "@id": "nxv:realm",
       "@type": [
@@ -25,13 +25,34 @@
       "_deprecated": false
     },
     {
-      "@id": "nxv:projects",
+      "@id": "nxv:deprecated",
       "@type": [
-        "InProject",
-        "Resolver"
+        "Resolver",
+        "InProject"
       ],
       "priority": 20,
       "_rev": 1,
+      "_deprecated": false
+    },
+    {
+      "@id": "nxv:group",
+      "@type": [
+        "CrossProject",
+        "Resolver"
+      ],
+      "identities": [
+        {
+          "@type": "Anonymous"
+        }
+      ],
+      "priority": 30,
+      "projects": [
+        "{account}/{proj}"
+      ],
+      "resourceTypes": [
+        "nxv:Schema"
+      ],
+      "_rev": 2,
       "_deprecated": false
     }
   ]

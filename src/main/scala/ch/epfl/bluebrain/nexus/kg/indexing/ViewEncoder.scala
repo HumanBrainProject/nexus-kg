@@ -3,7 +3,7 @@ package ch.epfl.bluebrain.nexus.kg.indexing
 import ch.epfl.bluebrain.nexus.commons.types.search.{QueryResult, QueryResults}
 import ch.epfl.bluebrain.nexus.kg.config.Contexts._
 import ch.epfl.bluebrain.nexus.kg.config.Vocabulary._
-import ch.epfl.bluebrain.nexus.kg.indexing.View.{ElasticView, SparqlView}
+import ch.epfl.bluebrain.nexus.kg.indexing.View._
 import ch.epfl.bluebrain.nexus.kg.search.QueryResultEncoder._
 import ch.epfl.bluebrain.nexus.rdf.Graph.Triple
 import ch.epfl.bluebrain.nexus.rdf.Iri.AbsoluteIri
@@ -13,31 +13,36 @@ import ch.epfl.bluebrain.nexus.rdf.encoder.GraphEncoder
 import ch.epfl.bluebrain.nexus.rdf.syntax.circe.context._
 import ch.epfl.bluebrain.nexus.rdf.syntax.node._
 import ch.epfl.bluebrain.nexus.rdf.{Graph, Node}
-import io.circe.{Encoder, Json}
 import io.circe.parser.parse
+import io.circe.{Encoder, Json}
 
 /**
   * Encoders for [[View]]
   */
 object ViewEncoder {
 
-  implicit def qrViewEncoder: Encoder[QueryResults[View]] = {
-    def addJsonMapping(result: Json): Json =
-      result.hcursor
-        .get[String]("mapping")
-        .flatMap(parse)
-        .map(mapping => result deepMerge Json.obj("mapping" -> mapping))
-        .getOrElse(result)
+  /**
+    * Attempts to find the key ''mapping'' on the top Json level and transform the string value to Json. This will work
+    * E.g.: {"mapping": "{\"a\": \"b\"}"} will be converted to {"mapping": {"a": "b"}}
+    *
+    * @param json the json to be transformed
+    */
+  def transformToJson(json: Json): Json =
+    json.hcursor
+      .get[String]("mapping")
+      .flatMap(parse)
+      .map(mapping => json deepMerge Json.obj("mapping" -> mapping))
+      .getOrElse(json)
 
+  implicit def qrViewEncoder: Encoder[QueryResults[View]] =
     qrsEncoder[View](viewCtx mergeContext resourceCtx) mapJson { json =>
       val jsonWithCtx = json addContext viewCtxUri
       val results = jsonWithCtx.hcursor
-        .downField("results")
+        .downField(nxv.results.prefix)
         .focus
-        .flatMap(_.asArray.map(_.map(addJsonMapping)))
-      results.map(res => jsonWithCtx deepMerge Json.obj("results" -> Json.arr(res: _*))).getOrElse(jsonWithCtx)
+        .flatMap(_.asArray.map(_.map(transformToJson)))
+      results.map(res => jsonWithCtx deepMerge Json.obj(nxv.results.prefix -> Json.arr(res: _*))).getOrElse(jsonWithCtx)
     }
-  }
 
   implicit val viewGraphEncoder: GraphEncoder[View] = GraphEncoder {
     case view @ ElasticView(mapping, resourceSchemas, resourceTag, includeMeta, sourceAsText, _, id, _, _, _) =>
@@ -47,6 +52,10 @@ object ViewEncoder {
           .triplesFor(resourceSchemas) ++ view.triplesFor(includeMeta, sourceAsText, resourceTag, mapping))
     case view: SparqlView =>
       IriNode(view.id) -> Graph(view.mainTriples(nxv.SparqlView))
+    case view @ AggregateElasticView(_, _, _, id, _, _) =>
+      IriNode(id) -> Graph(
+        view.mainTriples(nxv.AggregateElasticView, nxv.Alpha) ++ view.triplesForView(view.valueString))
+
   }
 
   private implicit def qqViewEncoder(implicit enc: GraphEncoder[View]): GraphEncoder[QueryResult[View]] =
@@ -66,6 +75,12 @@ object ViewEncoder {
 
     def triplesFor(resourceSchemas: Set[AbsoluteIri]): Set[Triple] =
       resourceSchemas.map(r => (s: IriOrBNode, nxv.resourceSchemas, IriNode(r): Node))
+
+    def triplesForView(views: Set[ViewRef[String]]): Set[Triple] =
+      views.flatMap { viewRef =>
+        val ss = blank
+        Set[Triple]((s, nxv.views, ss), (ss, nxv.viewId, viewRef.id), (ss, nxv.project, viewRef.project))
+      }
 
     def triplesFor(includeMetadata: Boolean,
                    sourceAsText: Boolean,

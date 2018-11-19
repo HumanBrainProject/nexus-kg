@@ -1,11 +1,17 @@
 package ch.epfl.bluebrain.nexus.kg.indexing
 
+import akka.actor.{ActorRef, ActorSystem}
 import cats.MonadError
 import ch.epfl.bluebrain.nexus.commons.forward.client.ForwardClient
 import ch.epfl.bluebrain.nexus.iam.client.types.Identity._
-import ch.epfl.bluebrain.nexus.kg.resources.Event
+import ch.epfl.bluebrain.nexus.kg.config.AppConfig
 import ch.epfl.bluebrain.nexus.kg.resources.Event._
+import ch.epfl.bluebrain.nexus.kg.resources.{Event}
+import ch.epfl.bluebrain.nexus.kg.serializers.Serializer._
+import ch.epfl.bluebrain.nexus.service.indexer.persistence.{IndexerConfig, SequentialTagIndexer}
 import journal.Logger
+import monix.eval.Task
+import monix.execution.Scheduler
 
 
 /**
@@ -84,15 +90,51 @@ class InstanceForwardIndexer[F[_]](client: ForwardClient[F], settings: ForwardIn
 
 object InstanceForwardIndexer {
 
+//  /**
+//    * Constructs an instance incremental indexer that pushes data into an Forward indexer.
+//    *
+//    * @param client   the Forward client to use for communicating with the Forward indexer
+//    * @param settings the indexing settings
+//    * @param F        a MonadError typeclass instance for ''F[_]''
+//    * @tparam F the monadic effect type
+//    */
+//  final def apply[F[_]](client: ForwardClient[F], settings: ForwardIndexingSettings)(
+//      implicit F: MonadError[F, Throwable]): InstanceForwardIndexer[F] =
+//    new InstanceForwardIndexer(client, settings)
+
   /**
-    * Constructs an instance incremental indexer that pushes data into an Forward indexer.
+    * Starts the index process for an ElasticSearch client
     *
-    * @param client   the Forward client to use for communicating with the Forward indexer
-    * @param settings the indexing settings
-    * @param F        a MonadError typeclass instance for ''F[_]''
-    * @tparam F the monadic effect type
+    * @param resources      the resources operations
+    * @param labeledProject project to which the resource belongs containing label information (account label and project label)
     */
-  final def apply[F[_]](client: ForwardClient[F], settings: ForwardIndexingSettings)(
-      implicit F: MonadError[F, Throwable]): InstanceForwardIndexer[F] =
-    new InstanceForwardIndexer(client, settings)
+  // $COVERAGE-OFF$
+  final def start()(
+    implicit client: ForwardClient[Task],
+    s: Scheduler,
+    as: ActorSystem,
+    config: AppConfig): ActorRef = {
+
+//    implicit val lb = labeledProject
+
+    val indexer = new InstanceForwardIndexer[Task](client, ForwardIndexingSettings.apply(config.http.publicUri))
+//    val init = () => (()).runAsync
+
+    val index = (l: List[Event]) =>
+      Task.sequence(l.removeDupIds.map(indexer(_))).map(_ => ()).runAsync
+
+    SequentialTagIndexer.start(
+      IndexerConfig.builder
+        .name(s"forward-indexer-arango")
+        .tag(s"project=forward")
+        .plugin(config.persistence.queryJournalPlugin)
+        .retry(config.indexing.retry.maxCount, config.indexing.retry.strategy)
+        .batch(config.indexing.batch, config.indexing.batchTimeout)
+//        .init(init)
+        .index(index)
+        .build)
+  }
+  // $COVERAGE-ON$
+
+//  private[indexing] val ctx: Json = jsonContentOf("/elastic/default-context.json")
 }

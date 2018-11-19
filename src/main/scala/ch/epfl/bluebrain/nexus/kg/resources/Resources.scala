@@ -3,11 +3,11 @@ package ch.epfl.bluebrain.nexus.kg.resources
 import java.util.UUID
 
 import cats.Monad
+import cats.data.{EitherT, OptionT}
 import cats.instances.either._
 import cats.instances.vector._
-import cats.syntax.traverse._
 import cats.syntax.functor._
-import cats.data.{EitherT, OptionT}
+import cats.syntax.traverse._
 import ch.epfl.bluebrain.nexus.commons.es.client.ElasticClient
 import ch.epfl.bluebrain.nexus.commons.http.HttpClient
 import ch.epfl.bluebrain.nexus.commons.shacl.topquadrant.{ShaclEngine, ValidationReport}
@@ -17,8 +17,9 @@ import ch.epfl.bluebrain.nexus.iam.client.types.Identity
 import ch.epfl.bluebrain.nexus.kg.config.Schemas._
 import ch.epfl.bluebrain.nexus.kg.config.Vocabulary._
 import ch.epfl.bluebrain.nexus.kg.config.{AppConfig, Contexts}
+import ch.epfl.bluebrain.nexus.kg.directives.LabeledProject
+import ch.epfl.bluebrain.nexus.kg.indexing.View
 import ch.epfl.bluebrain.nexus.kg.indexing.View.ElasticView
-import ch.epfl.bluebrain.nexus.kg.indexing.{ElasticIndexer, View}
 import ch.epfl.bluebrain.nexus.kg.resolve.ProjectResolution
 import ch.epfl.bluebrain.nexus.kg.resources.AdditionalValidation._
 import ch.epfl.bluebrain.nexus.kg.resources.Rejection._
@@ -33,27 +34,26 @@ import ch.epfl.bluebrain.nexus.rdf.Iri.AbsoluteIri
 import ch.epfl.bluebrain.nexus.rdf.Node.{BNode, IriNode}
 import ch.epfl.bluebrain.nexus.rdf.Vocabulary._
 import ch.epfl.bluebrain.nexus.rdf.syntax.circe._
-import ch.epfl.bluebrain.nexus.rdf.syntax.jena._
 import ch.epfl.bluebrain.nexus.rdf.syntax.circe.context._
+import ch.epfl.bluebrain.nexus.rdf.syntax.jena._
 import ch.epfl.bluebrain.nexus.rdf.syntax.nexus._
 import ch.epfl.bluebrain.nexus.rdf.syntax.node._
 import ch.epfl.bluebrain.nexus.rdf.syntax.node.encoder._
-import ch.epfl.bluebrain.nexus.rdf.{Graph, Iri}
+import ch.epfl.bluebrain.nexus.rdf.{Graph, GraphConfiguration, Iri}
 import io.circe.Json
 
 /**
   * Resource operations.
   */
-abstract class Resources[F[_]](implicit F: Monad[F],
-                               repo: Repo[F],
-                               resolution: ProjectResolution[F],
-                               config: AppConfig) { self =>
-
+class Resources[F[_]](implicit F: Monad[F], val repo: Repo[F], resolution: ProjectResolution[F], config: AppConfig) {
+  self =>
+  //TODO: If we need to cast well known types, we should find a better way to do it
+  // on the rdf library side.
+  private implicit val graphConfig = GraphConfiguration(castDateTypes = false)
   type RejOrResourceV = EitherT[F, Rejection, ResourceV]
   type RejOrResource  = EitherT[F, Rejection, Resource]
   type OptResource    = OptionT[F, Resource]
-  type IriResults     = QueryResults[AbsoluteIri]
-  type IriResultsF    = F[QueryResults[AbsoluteIri]]
+  type JsonResults    = QueryResults[Json]
 
   /**
     * Creates a new resource attempting to extract the id from the source. If a primary node of the resulting graph
@@ -77,7 +77,7 @@ abstract class Resources[F[_]](implicit F: Monad[F],
       rawValue       <- materialize(projectRef, source)
       value          <- checkOrAssignId(Right((projectRef, base)), rawValue)
       (id, assigned)  = value
-      resource       <- create(id, schema, assigned)
+      resource       <- create(id, schema, assigned.copy(graph = assigned.graph.removeMetadata(id.value)))
     } yield resource
   // format: on
 
@@ -110,9 +110,9 @@ abstract class Resources[F[_]](implicit F: Monad[F],
       })
 
     for {
-      _           <- validate(id.parent, schema, value.graph)
+      _           <- validate(id, schema, value.graph)
       joinedTypes <- checkAndJoinTypes(value.graph.types(id.value).map(_.value))
-      newValue    <- additional(id, schema, joinedTypes, value)
+      newValue    <- additional(id, schema, joinedTypes, value, 1L)
       created     <- repo.create(id, schema, joinedTypes, newValue.source)
     } yield created
   }
@@ -171,10 +171,10 @@ abstract class Resources[F[_]](implicit F: Monad[F],
       _           <- checkSchema(resource)
       value       <- materialize(id, source)
       graph        = value.graph
-      _           <- validate(id.parent, resource.schema, value.graph)
+      _           <- validate(id, resource.schema, value.graph)
       joinedTypes  = graph.types(id.value).map(_.value)
-      _           <- additional(id, resource.schema, joinedTypes, value)
-      updated     <- repo.update(id, rev, joinedTypes, source)
+      newValue    <- additional(id, resource.schema, joinedTypes, value, rev + 1)
+      updated     <- repo.update(id, rev, joinedTypes, newValue.source)
     } yield updated
     // format: on
   }
@@ -297,8 +297,8 @@ abstract class Resources[F[_]](implicit F: Monad[F],
     * @return search results in the F context
     */
   def list(views: Set[View], deprecated: Option[Boolean], pagination: Pagination)(
-      implicit tc: HttpClient[F, IriResults],
-      elastic: ElasticClient[F]): IriResultsF =
+      implicit tc: HttpClient[F, JsonResults],
+      elastic: ElasticClient[F]): F[JsonResults] =
     list(views, deprecated, None, pagination)
 
   /**
@@ -311,8 +311,8 @@ abstract class Resources[F[_]](implicit F: Monad[F],
     * @return               search results in the F context
     */
   def list(views: Set[View], deprecated: Option[Boolean], schema: AbsoluteIri, pagination: Pagination)(
-      implicit tc: HttpClient[F, QueryResults[AbsoluteIri]],
-      elastic: ElasticClient[F]): F[QueryResults[AbsoluteIri]] =
+      implicit tc: HttpClient[F, JsonResults],
+      elastic: ElasticClient[F]): F[JsonResults] =
     list(views, deprecated, Some(schema), pagination)
 
   /**
@@ -325,11 +325,11 @@ abstract class Resources[F[_]](implicit F: Monad[F],
     * @return search results in the F context
     */
   private def list(views: Set[View], deprecated: Option[Boolean], schema: Option[AbsoluteIri], pagination: Pagination)(
-      implicit tc: HttpClient[F, IriResults],
-      elastic: ElasticClient[F]): IriResultsF =
+      implicit tc: HttpClient[F, JsonResults],
+      elastic: ElasticClient[F]): F[JsonResults] =
     views.collectFirst { case v: ElasticView if v.id == nxv.defaultElasticIndex.value => v } match {
       case Some(view) =>
-        elastic.search(QueryBuilder.queryFor(deprecated, schema), Set(ElasticIndexer.elasticIndex(view)))(pagination)
+        elastic.search(QueryBuilder.queryFor(deprecated, schema), Set(view.index))(pagination)
       case None =>
         F.pure(UnscoredQueryResults(0L, List.empty))
     }
@@ -351,49 +351,40 @@ abstract class Resources[F[_]](implicit F: Monad[F],
     *
     * @param resource the resource to materialize
     */
-  def materializeWithMeta(resource: Resource): RejOrResourceV =
+  def materializeWithMeta(resource: Resource)(implicit wrapped: LabeledProject): RejOrResourceV =
     for {
       resourceV <- materialize(resource)
-      graph = resourceV.value.graph
-      value = resourceV.value.copy(graph = graph ++ resourceV.metadata ++ resourceV.typeGraph)
+      value = resourceV.value.copy(
+        graph = Graph(resourceV.value.graph.triples ++ resourceV.metadata ++ resourceV.typeTriples))
     } yield resourceV.map(_ => value)
 
   /**
     * Transitively imports resources referenced by the primary node of the resource through ''owl:imports'' if the
     * resource has type ''owl:Ontology''.
     *
-    * @param resource the resource for which imports are looked up
+    * @param resId the resource id for which imports are looked up
+    * @param graph the resource graph for which imports are looked up
     */
-  private def imports(resource: ResourceV): EitherT[F, Rejection, Set[ResourceV]] = {
+  private def imports(resId: ResId, graph: Graph): EitherT[F, Rejection, Set[ResourceV]] = {
     import cats.implicits._
-    def canImport(id: AbsoluteIri, g: Graph): Boolean =
-      g.cursor(id)
-        .downField(rdf.tpe)
-        .values
-        .flatMap { vs =>
-          val set = vs.toSet
-          Some(set.contains(nxv.Schema) || set.contains(owl.Ontology))
-        }
-        .getOrElse(false)
 
     def importsValues(id: AbsoluteIri, g: Graph): Set[Ref] =
-      if (canImport(id, g))
-        g.objects(IriNode(id), owl.imports).unorderedFoldMap {
-          case IriNode(iri) => Set(Ref(iri))
-          case _            => Set.empty
-        } else Set.empty
+      g.objects(IriNode(id), owl.imports).unorderedFoldMap {
+        case IriNode(iri) => Set(Ref(iri))
+        case _            => Set.empty
+      }
 
     def lookup(current: Map[Ref, ResourceV], remaining: List[Ref]): EitherT[F, Rejection, Set[ResourceV]] = {
       def load(ref: Ref): EitherT[F, Rejection, (Ref, ResourceV)] =
         current
           .find(_._1 == ref)
           .map(tuple => EitherT.rightT[F, Rejection](tuple))
-          .getOrElse(ref.resolveOr(resource.id.parent)(NotFound).flatMap(r => materialize(r)).map(ref -> _))
+          .getOrElse(ref.resolveOr(resId.parent)(NotFound).flatMap(materialize).map(ref -> _))
 
       if (remaining.isEmpty) EitherT.rightT(current.values.toSet)
       else {
         val batch: EitherT[F, Rejection, List[(Ref, ResourceV)]] =
-          remaining.traverse(ref => load(ref))
+          remaining.traverse(load)
 
         batch.flatMap { list =>
           val nextRemaining: List[Ref] = list.flatMap {
@@ -404,7 +395,8 @@ abstract class Resources[F[_]](implicit F: Monad[F],
         }
       }
     }
-    lookup(Map.empty, importsValues(resource.id.value, resource.value.graph).toList)
+
+    lookup(Map.empty, importsValues(resId.value, graph).toList)
   }
 
   private def materialize(projectRef: ProjectRef, source: Json): EitherT[F, Rejection, ResourceF.Value] = {
@@ -446,7 +438,7 @@ abstract class Resources[F[_]](implicit F: Monad[F],
     // format: off
     for {
       rawValue      <- materialize(id.parent, source)
-      value         <- checkOrAssignId(Left(id), rawValue)
+      value         <- checkOrAssignId(Left(id), rawValue.copy(graph = rawValue.graph.removeMetadata(id.value)))
       (_, assigned)  = value
     } yield assigned
   // format: on
@@ -472,7 +464,7 @@ abstract class Resources[F[_]](implicit F: Monad[F],
       }
     }
 
-  private def validate(projectRef: ProjectRef, schema: Ref, data: Graph): EitherT[F, Rejection, Unit] = {
+  private def validate(resId: ResId, schema: Ref, data: Graph): EitherT[F, Rejection, Unit] = {
     def toEitherT(optReport: Option[ValidationReport]): EitherT[F, Rejection, Unit] =
       optReport match {
         case Some(r) if r.isValid() => EitherT.rightT(())
@@ -487,21 +479,28 @@ abstract class Resources[F[_]](implicit F: Monad[F],
     def schemaContext(): EitherT[F, Rejection, SchemaContext] =
       // format: off
       for {
-        resolvedSchema                <- schema.resolveOr(projectRef)(NotFound)
+        resolvedSchema                <- schema.resolveOr(resId.parent)(NotFound)
         materializedSchema            <- materialize(resolvedSchema)
-        importedResources             <- imports(materializedSchema)
+        importedResources             <- imports(materializedSchema.id, materializedSchema.value.graph)
         (schemaImports, dataImports)  = partition(importedResources)
       } yield SchemaContext(materializedSchema, dataImports, schemaImports)
       // format: on
 
     schema.iri match {
       case `resourceSchemaUri` => EitherT.rightT(())
-      case `shaclSchemaUri`    => toEitherT(ShaclEngine(data.asJenaModel, reportDetails = true))
+      case `shaclSchemaUri` =>
+        imports(resId, data).flatMap { resolved =>
+          val resolvedSets = resolved.foldLeft(data.triples)(_ ++ _.value.graph.triples)
+          val resolvedData = Graph(resolvedSets).asJenaModel
+          toEitherT(ShaclEngine(resolvedData, reportDetails = true))
+        }
       case _ =>
         schemaContext().flatMap { resolved =>
-          val resolvedSchema =
-            resolved.schemaImports.foldLeft(resolved.schema.value.graph)(_ ++ _.value.graph).asJenaModel
-          val resolvedData = resolved.dataImports.foldLeft(data)(_ ++ _.value.graph).asJenaModel
+          val resolvedSchemaSets =
+            resolved.schemaImports.foldLeft(resolved.schema.value.graph.triples)(_ ++ _.value.graph.triples)
+          val resolvedSchema   = Graph(resolvedSchemaSets).asJenaModel
+          val resolvedDataSets = resolved.dataImports.foldLeft(data.triples)(_ ++ _.value.graph.triples)
+          val resolvedData     = Graph(resolvedDataSets).asJenaModel
           toEitherT(ShaclEngine(resolvedData, resolvedSchema, validateShapes = false, reportDetails = true))
         }
     }
@@ -536,11 +535,8 @@ abstract class Resources[F[_]](implicit F: Monad[F],
 
   private final implicit class RefSyntax(ref: Ref) {
 
-    def resolve(projectRef: ProjectRef): F[Option[Resource]] =
-      resolution(projectRef)(self).resolve(ref)
-
     def resolveOr(projectRef: ProjectRef)(f: Ref => Rejection): EitherT[F, Rejection, Resource] =
-      EitherT.fromOptionF(resolve(projectRef), f(ref))
+      EitherT.fromOptionF(resolution(projectRef)(self).resolve(ref), f(ref))
   }
 
 }
@@ -553,7 +549,7 @@ object Resources {
     * @return a new [[Resources]] for the provided F type
     */
   final def apply[F[_]: Monad: Repo: ProjectResolution](implicit config: AppConfig): Resources[F] =
-    new Resources[F]() {}
+    new Resources[F]()
 
   private[resources] final case class SchemaContext(schema: ResourceV,
                                                     dataImports: Set[ResourceV],

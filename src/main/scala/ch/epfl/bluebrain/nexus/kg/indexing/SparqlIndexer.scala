@@ -7,23 +7,22 @@ import akka.http.scaladsl.model.Uri
 import akka.stream.ActorMaterializer
 import cats.MonadError
 import cats.syntax.flatMap._
-import cats.syntax.functor._
-import cats.syntax.show._
 import ch.epfl.bluebrain.nexus.commons.http.HttpClient
+import ch.epfl.bluebrain.nexus.commons.http.HttpClient.UntypedHttpClient
 import ch.epfl.bluebrain.nexus.commons.http.JsonLdCirceSupport._
 import ch.epfl.bluebrain.nexus.commons.sparql.client.{BlazegraphClient, SparqlClient}
-import ch.epfl.bluebrain.nexus.kg.config.AppConfig.{PersistenceConfig, SparqlConfig}
-import ch.epfl.bluebrain.nexus.kg.config.Vocabulary.nxv
+import ch.epfl.bluebrain.nexus.kg.config.AppConfig
+import ch.epfl.bluebrain.nexus.kg.directives.LabeledProject
 import ch.epfl.bluebrain.nexus.kg.indexing.View.SparqlView
 import ch.epfl.bluebrain.nexus.kg.resources.Rejection.NotFound
 import ch.epfl.bluebrain.nexus.kg.resources._
+import ch.epfl.bluebrain.nexus.kg.serializers.Serializer._
 import ch.epfl.bluebrain.nexus.rdf.akka.iri._
-import ch.epfl.bluebrain.nexus.service.indexer.persistence.SequentialTagIndexer
+import ch.epfl.bluebrain.nexus.service.indexer.persistence.{IndexerConfig, SequentialTagIndexer}
 import monix.eval.Task
 import monix.execution.Scheduler
 import org.apache.jena.query.ResultSet
 
-import scala.util.Try
 import scala.collection.JavaConverters._
 
 /**
@@ -33,7 +32,8 @@ import scala.collection.JavaConverters._
   * @param resources the resources operations
   */
 private class SparqlIndexer[F[_]](client: SparqlClient[F], resources: Resources[F])(
-    implicit F: MonadError[F, Throwable]) {
+    implicit F: MonadError[F, Throwable],
+    labeledProject: LabeledProject) {
 
   /**
     * When an event is received, the current state is obtained.
@@ -47,26 +47,13 @@ private class SparqlIndexer[F[_]](client: SparqlClient[F], resources: Resources[
     */
   final def apply(ev: Event): F[Unit] = {
     resources.fetch(ev.id, None).value.flatMap {
-      case None => F.raiseError(NotFound(ev.id.ref))
-      case Some(resource) =>
-        fetchRevision(ev.id) flatMap {
-          case Some(rev) if resource.rev > rev => indexResource(resource)
-          case None                            => indexResource(resource)
-          case _                               => F.pure(())
-        }
+      case None           => F.raiseError(NotFound(ev.id.ref))
+      case Some(resource) => indexResource(resource)
     }
   }
 
-  private def query(id: ResId) =
-    s"SELECT ?o WHERE {<${id.value.show}> <${nxv.rev.value.show}> ?o} LIMIT 1"
-
-  private def fetchRevision(id: ResId): F[Option[Long]] =
-    client.queryRs(query(id)).map { rs =>
-      Try(rs.next().getLiteral("o").getLong).toOption
-    }
-
   private def indexResource(res: Resource): F[Unit] =
-    resources.materialize(res).value.flatMap {
+    resources.materializeWithMeta(res).value.flatMap {
       case Left(err) => F.raiseError(err)
       case Right(r)  => client.replace(res.id, r.value.graph)
     }
@@ -79,41 +66,46 @@ object SparqlIndexer {
   /**
     * Starts the index process for an sparql client
     *
-    * @param view      the view for which to start the index
-    * @param resources the resources operations
+    * @param view           the view for which to start the index
+    * @param resources      the resources operations
+    * @param labeledProject project to which the resource belongs containing label information (account label and project label)
     */
   // $COVERAGE-OFF$
-  final def start(view: SparqlView, resources: Resources[Task])(implicit
-                                                                as: ActorSystem,
-                                                                s: Scheduler,
-                                                                ucl: HttpClient[Task, ResultSet],
-                                                                config: SparqlConfig,
-                                                                persistence: PersistenceConfig): ActorRef = {
+  final def start(view: SparqlView, resources: Resources[Task], labeledProject: LabeledProject)(
+      implicit as: ActorSystem,
+      mt: ActorMaterializer,
+      ul: UntypedHttpClient[Task],
+      s: Scheduler,
+      ucl: HttpClient[Task, ResultSet],
+      config: AppConfig): ActorRef = {
 
-    implicit val mt = ActorMaterializer()
-    implicit val ul = HttpClient.taskHttpClient
+    implicit val lb = labeledProject
+
     val properties: Map[String, String] = {
       val props = new Properties()
       props.load(getClass.getResourceAsStream("/blazegraph/index.properties"))
       props.asScala.toMap
     }
 
-    val client = BlazegraphClient[Task](config.base, view.name, config.akkaCredentials)
-
-    //TODO: Change this in commons
-    def init = client.namespaceExists.flatMap {
-      case true  => Task.pure(())
-      case false => client.createNamespace(properties)
-    }
-
+    val client  = BlazegraphClient[Task](config.sparql.base, view.name, config.sparql.akkaCredentials)
     val indexer = new SparqlIndexer(client, resources)
-    SequentialTagIndexer.startLocal[Event](
-      () => init.runAsync,
-      (ev: Event) => indexer(ev).runAsync,
-      persistence.queryJournalPlugin,
-      tag = s"project=${view.ref.id}",
-      name = s"sparql-indexer-${view.name}"
-    )
+    val init = () =>
+      (for {
+        _ <- client.createNamespace(properties)
+        _ <- if (view.rev > 1) client.copy(namespace = view.copy(rev = view.rev - 1).name).deleteNamespace
+        else Task.pure(true)
+      } yield ()).runAsync
+
+    SequentialTagIndexer.start(
+      IndexerConfig.builder
+        .name(s"sparql-indexer-${view.name}")
+        .tag(s"project=${view.ref.id}")
+        .plugin(config.persistence.queryJournalPlugin)
+        .retry(config.indexing.retry.maxCount, config.indexing.retry.strategy)
+        .batch(config.indexing.batch, config.indexing.batchTimeout)
+        .init(init)
+        .index((l: List[Event]) => Task.sequence(l.removeDupIds.map(indexer(_))).map(_ => ()).runAsync)
+        .build)
   }
   // $COVERAGE-ON$
 }

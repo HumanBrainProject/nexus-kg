@@ -4,17 +4,23 @@ import akka.actor.{Actor, ActorRef, ActorSystem, Props, Stash}
 import akka.cluster.ddata.DistributedData
 import akka.cluster.ddata.Replicator.{Changed, Deleted, Subscribe}
 import akka.cluster.sharding.ShardRegion.{ExtractEntityId, ExtractShardId}
-import akka.cluster.sharding.{ClusterSharding, ClusterShardingSettings}
+import akka.cluster.sharding.{ClusterSharding, ClusterShardingSettings, ShardRegion}
 import akka.pattern.pipe
 import ch.epfl.bluebrain.nexus.admin.client.types.{Account, Project}
-import ch.epfl.bluebrain.nexus.service.indexer.stream.StreamCoordinator.Stop
-import ch.epfl.bluebrain.nexus.kg.async.ProjectViewCoordinator.Start
 import ch.epfl.bluebrain.nexus.kg.async.DistributedCache._
-import ch.epfl.bluebrain.nexus.kg.indexing.View
-import ch.epfl.bluebrain.nexus.kg.resources.{AccountRef, ProjectRef}
+import ch.epfl.bluebrain.nexus.kg.async.ProjectViewCoordinator.Start
+import ch.epfl.bluebrain.nexus.kg.directives.LabeledProject
+import ch.epfl.bluebrain.nexus.kg.indexing.View.SingleView
+import ch.epfl.bluebrain.nexus.kg.resources.{AccountRef, ProjectLabel, ProjectRef}
+import ch.epfl.bluebrain.nexus.service.indexer.retryer.RetryStrategy
+import ch.epfl.bluebrain.nexus.service.indexer.retryer.RetryStrategy.Backoff
+import ch.epfl.bluebrain.nexus.service.indexer.retryer.syntax._
+import ch.epfl.bluebrain.nexus.service.indexer.stream.StreamCoordinator.Stop
 import journal.Logger
 import monix.eval.Task
 import monix.execution.Scheduler.Implicits.global
+
+import scala.concurrent.duration._
 
 /**
   * Manages the indices that are configured to be run for the selected project. It monitors changes in the account,
@@ -25,9 +31,14 @@ import monix.execution.Scheduler.Implicits.global
   *
   * @param cache    the distributed cache
   * @param selector a function that selects the child actor index runner specific for the view type
+  * @param onStop   a function that is called whenever a view is stopped
   */
 //noinspection ActorMutableStateInspection
-class ProjectViewCoordinator(cache: DistributedCache[Task], selector: View => ActorRef) extends Actor with Stash {
+class ProjectViewCoordinator(cache: DistributedCache[Task],
+                             selector: (SingleView, LabeledProject) => ActorRef,
+                             onStop: SingleView => Task[Boolean])
+    extends Actor
+    with Stash {
 
   private val replicator = DistributedData(context.system).replicator
 
@@ -40,54 +51,59 @@ class ProjectViewCoordinator(cache: DistributedCache[Task], selector: View => Ac
 
   private val log = Logger(s"${getClass.getSimpleName} ($projectUuid)")
 
+  private implicit val strategy: RetryStrategy = Backoff(1 minute, 0.2)
+
   init()
 
   def init(): Unit = {
     log.debug("Initializing")
 
-    replicator ! Subscribe(account, self)
-    replicator ! Subscribe(project, self)
-    replicator ! Subscribe(view, self)
-
     val start = for {
-      as <- cache.account(accountRef)
-      ps <- cache.project(projectRef)
-      vs <- cache.views(projectRef)
-    } yield Start(as, ps, vs)
-    val _ = start.runAsync pipeTo self
+      account <- cache.account(accountRef).retryWhenNot { case Some(ac) => ac }
+      proj    <- cache.project(projectRef).retryWhenNot { case Some(ac) => ac }
+      vs      <- cache.views(projectRef).map(_.collect { case v: SingleView => v })
+    } yield Start(account, LabeledProject(ProjectLabel(account.label, proj.label), proj, accountRef), vs)
+    val _ = start.map { msg =>
+      replicator ! Subscribe(account, self)
+      replicator ! Subscribe(project, self)
+      replicator ! Subscribe(view, self)
+      msg
+    }.runAsync pipeTo self
   }
 
   def receive: Receive = {
-    case s @ Start(accountStateOpt, projectStateOpt, views) =>
+    case s @ Start(ac, wrapped, views) =>
       log.debug(s"Started with state '$s'")
-      // for missing values assume not deprecated
-      val accountDeprecated = accountStateOpt.exists(_.deprecated)
-      val projectDeprecated = projectStateOpt.exists(_.deprecated)
-      context.become(initialized(accountDeprecated, projectDeprecated, views, Map.empty))
+      context.become(initialized(ac, wrapped, views, Map.empty))
       unstashAll()
     case other =>
       log.debug(s"Received non Start message '$other', stashing until the actor is initialized")
       stash()
   }
 
-  def initialized(accountDeprecated: Boolean,
-                  projectDeprecated: Boolean,
-                  views: Set[View],
-                  childMapping: Map[String, ActorRef]): Receive = {
+  def initialized(ac: Account,
+                  wrapped: LabeledProject,
+                  views: Set[SingleView],
+                  childMapping: Map[SingleView, ActorRef])(): Receive = {
+
+    def updateWrappedAc(account: Account): LabeledProject =
+      wrapped.copy(label = wrapped.label.copy(account = account.label))
+    def updateWrappedProj(project: Project): LabeledProject =
+      wrapped.copy(label = wrapped.label.copy(value = project.label), project = project)
+
     // stop children if the account or project is deprecated
-    val stopChildren = accountDeprecated || projectDeprecated
+    val stopChildren = ac.deprecated || wrapped.project.deprecated
     val nextMapping = if (stopChildren) {
       log.debug("Account and/or project are deprecated, stopping any running children")
       childMapping.values.foreach { ref =>
         ref ! Stop
         context.stop(ref)
       }
-      Map.empty[String, ActorRef]
+      Task.sequence(childMapping.keys.map(onStop)).runAsync
+      Map.empty[SingleView, ActorRef]
     } else {
-      val withNames = views.map(v => v.name -> v).toMap
-      val added     = withNames.keySet -- childMapping.keySet
-      val removed   = childMapping.keySet -- withNames.keySet
-
+      val added   = views -- childMapping.keySet
+      val removed = childMapping.keySet -- views
       // stop actors that don't have a corresponding view anymore
       if (removed.nonEmpty) log.debug(s"Stopping view coordinators for $removed")
       removed.foreach { name =>
@@ -95,40 +111,41 @@ class ProjectViewCoordinator(cache: DistributedCache[Task], selector: View => Ac
         ref ! Stop
         context.stop(ref)
       }
+      Task.sequence(removed.map(onStop)).runAsync
 
       // construct actors for the new view updates
       if (added.nonEmpty) log.debug(s"Creating view coordinators for $added")
-      val newActorsMapping = withNames
-        .filter { case (name, _) => added.contains(name) }
-        .mapValues(selector)
+      val newActorsMapping = views.intersect(added).map(v => v -> selector(v, wrapped))
 
       childMapping -- removed ++ newActorsMapping
     }
 
     {
       case c @ Changed(`account`) =>
-        val deprecated = c.get(account).value.value.exists(_.deprecated)
-        log.debug(s"Account deprecation changed ($accountDeprecated -> $deprecated)")
-        context.become(initialized(deprecated, projectDeprecated, views, nextMapping))
+        val (newWrapped, newAccount) =
+          c.get(account).value.value.map(a => updateWrappedAc(a) -> a).getOrElse(wrapped -> ac)
+        log.debug(s"Account deprecation changed (${ac.deprecated} -> ${newAccount.deprecated})")
+        context.become(initialized(newAccount, newWrapped, views, nextMapping))
 
       case Deleted(`account`) => // should not happen, maintain previous state
         log.warn("Received account data entry deleted notification, discarding")
 
       case c @ Changed(`project`) =>
-        val deprecated = c.get(project).value.value.exists(_.deprecated)
-        log.debug(s"Project deprecation changed ($projectDeprecated -> $deprecated)")
-        context.become(initialized(accountDeprecated, deprecated, views, nextMapping))
+        val newWrapped = c.get(project).value.value.map(updateWrappedProj).getOrElse(wrapped)
+        log.debug(s"Project deprecation changed (${wrapped.project.deprecated} -> ${newWrapped.project.deprecated})")
+        context.become(initialized(ac, newWrapped, views, nextMapping))
 
       case Deleted(`project`) => // should not happen, maintain previous state
         log.warn("Received project data entry deleted notification, discarding")
 
       case c @ Changed(`view`) =>
         log.debug("View collection changed, updating state")
-        context.become(initialized(accountDeprecated, projectDeprecated, c.get(view).value.value, nextMapping))
+        context.become(
+          initialized(ac, wrapped, c.get(view).value.value.collect { case v: SingleView => v }, nextMapping))
 
       case Deleted(`view`) =>
         log.debug("View collection removed, updating state")
-        context.become(initialized(accountDeprecated, projectDeprecated, Set.empty, nextMapping))
+        context.become(initialized(ac, wrapped, Set.empty, nextMapping))
 
       case _ => // drop
     }
@@ -137,38 +154,47 @@ class ProjectViewCoordinator(cache: DistributedCache[Task], selector: View => Ac
 }
 
 object ProjectViewCoordinator {
-  private final case class Start(accountState: Option[Account], projectState: Option[Project], views: Set[View])
+  private final case class Start(accountState: Account, wrapped: LabeledProject, views: Set[SingleView])
 
   final case class Msg(accountRef: AccountRef, projectRef: ProjectRef)
 
   private[async] def shardExtractor(shards: Int): ExtractShardId = {
     case Msg(AccountRef(acc), ProjectRef(proj)) => math.abs(s"${acc}_$proj".hashCode) % shards toString
+    case ShardRegion.StartEntity(id)            => (id.hashCode                       % shards) toString
   }
 
   private[async] val entityExtractor: ExtractEntityId = {
     case msg @ Msg(AccountRef(acc), ProjectRef(proj)) => (s"${acc}_$proj", msg)
   }
 
-  private[async] def props(cache: DistributedCache[Task], selector: View => ActorRef): Props =
-    Props(new ProjectViewCoordinator(cache, selector))
+  private[async] def props(cache: DistributedCache[Task],
+                           selector: (SingleView, LabeledProject) => ActorRef,
+                           onStop: SingleView => Task[Boolean]): Props =
+    Props(new ProjectViewCoordinator(cache, selector, onStop))
 
   /**
     * Starts the ProjectViewCoordinator shard with the provided configuration options.
     *
     * @param cache            the distributed cache
     * @param selector         a function that selects the child actor index runner specific for the view type
+    * @param onStop           a function that is called whenever a view is stopped
     * @param shardingSettings the sharding settings
     * @param shards           the number of shards to use
     * @param as               the underlying actor system
     */
   final def start(
       cache: DistributedCache[Task],
-      selector: View => ActorRef,
+      selector: (SingleView, LabeledProject) => ActorRef,
+      onStop: SingleView => Task[Boolean],
       shardingSettings: Option[ClusterShardingSettings],
       shards: Int
   )(implicit as: ActorSystem): ActorRef = {
     val settings = shardingSettings.getOrElse(ClusterShardingSettings(as)).withRememberEntities(true)
     ClusterSharding(as)
-      .start("project-view-coordinator", props(cache, selector), settings, entityExtractor, shardExtractor(shards))
+      .start("project-view-coordinator",
+             props(cache, selector, onStop),
+             settings,
+             entityExtractor,
+             shardExtractor(shards))
   }
 }

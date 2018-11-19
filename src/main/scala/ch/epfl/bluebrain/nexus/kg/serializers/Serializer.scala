@@ -17,7 +17,6 @@ import io.circe.generic.extras.auto._
 import io.circe.generic.extras.semiauto.{deriveDecoder, deriveEncoder}
 import io.circe.java8.time._
 import io.circe.parser.decode
-import io.circe.refined._
 import io.circe.syntax._
 import io.circe.{Decoder, Encoder, Json}
 
@@ -71,12 +70,12 @@ object Serializer {
   private val enc = deriveEncoder[Event]
   private val dec = deriveDecoder[Event]
 
-  private implicit val eventEncoder: Encoder[Event] =
+  implicit val eventEncoder: Encoder[Event] =
     Encoder.instance { ev =>
       enc(ev).removeKeys("id") deepMerge ev.id.asJson
     }
 
-  private implicit val eventDecoder: Decoder[Event] =
+  implicit val eventDecoder: Decoder[Event] =
     Decoder.instance { hc =>
       val json = hc.value
       for {

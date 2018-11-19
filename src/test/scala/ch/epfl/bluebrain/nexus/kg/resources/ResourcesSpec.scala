@@ -6,12 +6,11 @@ import java.time.{Clock, Instant, ZoneId}
 import cats.data.EitherT
 import cats.syntax.show._
 import cats.{Id => CId}
-import ch.epfl.bluebrain.nexus.admin.client.AdminClient
 import ch.epfl.bluebrain.nexus.commons.http.syntax.circe._
 import ch.epfl.bluebrain.nexus.commons.test
 import ch.epfl.bluebrain.nexus.commons.test.Randomness
-import ch.epfl.bluebrain.nexus.iam.client.types.{AuthToken, Identity}
-import ch.epfl.bluebrain.nexus.iam.client.types.Identity.Anonymous
+import ch.epfl.bluebrain.nexus.iam.client.types.Identity.{Anonymous, UserRef}
+import ch.epfl.bluebrain.nexus.iam.client.types._
 import ch.epfl.bluebrain.nexus.kg.TestHelper
 import ch.epfl.bluebrain.nexus.kg.async.DistributedCache
 import ch.epfl.bluebrain.nexus.kg.config.Contexts._
@@ -22,17 +21,18 @@ import ch.epfl.bluebrain.nexus.kg.resolve.{ProjectResolution, Resolver, StaticRe
 import ch.epfl.bluebrain.nexus.kg.resources.Ref.Latest
 import ch.epfl.bluebrain.nexus.kg.resources.Rejection._
 import ch.epfl.bluebrain.nexus.kg.resources.State.Initial
-import ch.epfl.bluebrain.nexus.kg.resources.attachment.Attachment.{BinaryDescription, Digest, Size, StoredSummary}
+import ch.epfl.bluebrain.nexus.kg.resources.attachment.Attachment.{BinaryDescription, Digest, StoredSummary}
 import ch.epfl.bluebrain.nexus.kg.resources.attachment.AttachmentStore
 import ch.epfl.bluebrain.nexus.rdf.Iri
 import ch.epfl.bluebrain.nexus.rdf.Iri.AbsoluteIri
 import ch.epfl.bluebrain.nexus.rdf.Vocabulary._
 import ch.epfl.bluebrain.nexus.rdf.syntax.circe.context._
+import ch.epfl.bluebrain.nexus.rdf.syntax.node.unsafe._
 import ch.epfl.bluebrain.nexus.sourcing.mem.MemoryAggregate
 import ch.epfl.bluebrain.nexus.sourcing.mem.MemoryAggregate._
 import com.typesafe.config.ConfigFactory
 import io.circe.Json
-import org.mockito.ArgumentMatchers.anyString
+import org.mockito.ArgumentMatchers.any
 import org.mockito.Mockito.{reset, when}
 import org.scalatest._
 import org.scalatest.mockito.MockitoSugar
@@ -55,11 +55,14 @@ class ResourcesSpec
   private implicit val repo         = Repo(agg, clock)
   private implicit val store        = mock[AttachmentStore[CId, String, String]]
   private val cache                 = mock[DistributedCache[CId]]
-  private val adminClient           = mock[AdminClient[CId]]
-  when(cache.resolvers(ProjectRef(anyString()))).thenReturn(Set.empty[Resolver])
-  private implicit val saToken = Some(AuthToken("service-account-token"))
+  when(cache.resolvers(any[ProjectRef])).thenReturn(Set.empty[Resolver])
   private implicit val resolution =
-    new ProjectResolution[CId](cache, StaticResolution(AppConfig.iriResolution), adminClient)
+    new ProjectResolution[CId](
+      cache,
+      StaticResolution(AppConfig.iriResolution),
+      FullAccessControlList(
+        (UserRef("realm", "sub"), Address("some/path"), Permissions(Permission("resources/manage"))))
+    )
   private val resources: Resources[CId] = Resources[CId]
 
   private def randomIri() = Iri.absolute(s"http://example.com/$uuid").right.value
@@ -77,19 +80,21 @@ class ResourcesSpec
   }
 
   trait ResolverResource extends Base {
-    def resolverFrom(json: Json) = json addContext resolverCtxUri deepMerge Json.obj("@id" -> Json.fromString(id.show))
+    def resolverFrom(json: Json) =
+      json appendContextOf resolverCtx deepMerge Json.obj("@id" -> Json.fromString(id.show))
 
     val schema   = Latest(resolverSchemaUri)
     val resolver = resolverFrom(jsonContentOf("/resolve/cross-project.json"))
 
-    val resolverUpdated = jsonContentOf("/resolve/cross-project-updated.json") addContext resolverCtxUri deepMerge Json
-      .obj("@id" -> Json.fromString(id.show))
-    val types = Set[AbsoluteIri](nxv.Resolver, nxv.CrossProject)
+    val resolverUpdated = resolverFrom(jsonContentOf("/resolve/cross-project-updated.json"))
+    val types           = Set[AbsoluteIri](nxv.Resolver, nxv.CrossProject)
   }
 
   trait ViewResource extends Base {
+    def resolverFrom(json: Json) =
+      json appendContextOf viewCtx deepMerge Json.obj("@id" -> Json.fromString(id.show))
     val schema = Latest(viewSchemaUri)
-    val view = jsonContentOf("/view/elasticview.json") addContext viewCtxUri deepMerge Json.obj(
+    val view = jsonContentOf("/view/elasticview.json") appendContextOf viewCtx deepMerge Json.obj(
       "@id" -> Json.fromString(id.show))
     val types = Set[AbsoluteIri](nxv.View, nxv.ElasticView, nxv.Alpha)
   }
@@ -104,7 +109,7 @@ class ResourcesSpec
     val desc       = BinaryDescription("name", "text/plain")
     val source     = "some text"
     val relative   = Paths.get("./other")
-    val attributes = desc.process(StoredSummary(relative, Size(value = 20L), Digest("MD5", "1234")))
+    val attributes = desc.process(StoredSummary(relative, 20L, Digest("MD5", "1234")))
     when(store.save(resId, desc, source)).thenReturn(EitherT.rightT[CId, Rejection](attributes))
     when(store.save(resId, desc, source)).thenReturn(EitherT.rightT[CId, Rejection](attributes))
   }
@@ -165,6 +170,27 @@ class ResourcesSpec
           ResourceF.simpleF(resId, view, schema = schema, types = types)
       }
 
+      "prevent to create a resource that does not validate against the view schema" in new ViewResource {
+        val invalid = List.range(1, 3).map(i => jsonContentOf(s"/view/aggelasticviewwrong$i.json"))
+        forAll(invalid) { j =>
+          val json   = resolverFrom(j)
+          val report = resources.create(projectRef, base, schema, json).value.left.value
+          report shouldBe a[InvalidResource]
+        }
+      }
+
+      "create resources that validate against view schema" in {
+        val valid = List(jsonContentOf("/view/aggelasticviewrefs.json"), jsonContentOf("/view/aggelasticview.json"))
+        val tpes  = Set[AbsoluteIri](nxv.View, nxv.AggregateElasticView, nxv.Alpha)
+        forAll(valid) { j =>
+          new ViewResource {
+            val json = resolverFrom(j)
+            resources.create(projectRef, base, schema, json).value.right.value shouldEqual
+              ResourceF.simpleF(resId, json, schema = schema, types = tpes)
+          }
+        }
+      }
+
       "create a new resource validated against the resolver schema without passing the id on the call (neither on the Json)" in new ResolverResource {
         private val resolverNoId = resolver removeKeys "@id"
         private val result       = resources.create(projectRef, base, schema, resolverNoId).value.right.value
@@ -195,7 +221,7 @@ class ResourcesSpec
         }
       }
 
-      "prevent to create a resource that does not validate" in new ResolverResource {
+      "prevent to create a resource that does not validate against the resolver schema" in new ResolverResource {
         val invalid = List.range(1, 3).map(i => jsonContentOf(s"/resolve/cross-project-wrong-$i.json"))
         forAll(invalid) { j =>
           val json   = resolverFrom(j)
@@ -225,6 +251,12 @@ class ResourcesSpec
         private val json = resolver deepMerge Json.obj("@type" -> Json.fromString("nxv:Resource"))
         resources.createWithId(resId, schema, json).value.left.value shouldEqual
           IncorrectTypes(resId.ref, Set(nxv.Resource.value))
+      }
+
+      "prevent creating a schema with wrong imports" in new ResolverSchema {
+        private val json = resolver deepMerge Json.obj("imports" -> Json.fromString("http://example.com/some"))
+        resources.createWithId(resId, schema, json).value.left.value shouldEqual
+          NotFound(Ref(url"http://example.com/some".value))
       }
 
       "create a new schema passing the id on the call (the provided on the Json)" in new ResolverSchema {
