@@ -149,12 +149,12 @@ object Indexing {
       case _: SparqlView =>
         BlazegraphClient[Task](config.sparql.base, view.name, config.sparql.akkaCredentials).deleteNamespace
     }
-    InstanceForwardIndexer.start()
     val coordinator = ProjectViewCoordinator.start(cache, selector, onStop, None, config.cluster.shards)
     val indexing    = new Indexing(resources, cache, coordinator)
     indexing.startKafkaStream()
     indexing.startResolverStream()
     indexing.startViewStream()
+    InstanceForwardIndexer.start()
     indexing.startMigrationStream()
 
   }

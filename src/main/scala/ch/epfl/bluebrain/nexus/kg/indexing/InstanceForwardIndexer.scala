@@ -6,13 +6,13 @@ import ch.epfl.bluebrain.nexus.commons.forward.client.ForwardClient
 import ch.epfl.bluebrain.nexus.iam.client.types.Identity._
 import ch.epfl.bluebrain.nexus.kg.config.AppConfig
 import ch.epfl.bluebrain.nexus.kg.resources.Event._
-import ch.epfl.bluebrain.nexus.kg.resources.{Event}
+import ch.epfl.bluebrain.nexus.kg.resources.Event
 import ch.epfl.bluebrain.nexus.kg.serializers.Serializer._
 import ch.epfl.bluebrain.nexus.service.indexer.persistence.{IndexerConfig, SequentialTagIndexer}
 import journal.Logger
 import monix.eval.Task
 import monix.execution.Scheduler
-
+import scala.concurrent.Future
 
 /**
   * Instance incremental indexing logic that pushes data into an Forward indexer.
@@ -44,6 +44,7 @@ class InstanceForwardIndexer[F[_]](client: ForwardClient[F], settings: ForwardIn
 //      event.id.schemaId.name,
 //      s"v${version.major}.${version.minor}.${version.patch}",
 //      event.id.id).mkString("/")
+    log.info(event.id.toString)
     val id = event.id.toString
     val authorId = event.identity match {
       case UserRef(_, sub) => Some(sub)
@@ -89,6 +90,7 @@ class InstanceForwardIndexer[F[_]](client: ForwardClient[F], settings: ForwardIn
 }
 
 object InstanceForwardIndexer {
+  private val log = Logger[this.type]
 
 //  /**
 //    * Constructs an instance incremental indexer that pushes data into an Forward indexer.
@@ -118,7 +120,7 @@ object InstanceForwardIndexer {
 //    implicit val lb = labeledProject
 
     val indexer = new InstanceForwardIndexer[Task](client, ForwardIndexingSettings.apply(config.http.publicUri))
-//    val init = () => (()).runAsync
+    val init = () => Future( log.info("========== init forward indexer"))
 
     val index = (l: List[Event]) =>
       Task.sequence(l.removeDupIds.map(indexer(_))).map(_ => ()).runAsync
@@ -130,8 +132,8 @@ object InstanceForwardIndexer {
         .plugin(config.persistence.queryJournalPlugin)
         .retry(config.indexing.retry.maxCount, config.indexing.retry.strategy)
         .batch(config.indexing.batch, config.indexing.batchTimeout)
-//        .init(init)
         .index(index)
+        .init(init)
         .build)
   }
   // $COVERAGE-ON$
