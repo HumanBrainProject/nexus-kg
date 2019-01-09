@@ -94,6 +94,7 @@ object Vocabulary {
     // View default ids
     val defaultElasticIndex = withSuffix("defaultElasticIndex")
     val defaultSparqlIndex  = withSuffix("defaultSparqlIndex")
+    val defaultArangoIndex  = withSuffix("defaultArangoIndex")
 
     // @type platform ids
     val Schema               = withSuffix("Schema")
@@ -106,6 +107,7 @@ object Vocabulary {
     val View                 = withSuffix("View")
     val ElasticView          = withSuffix("ElasticView")
     val SparqlView           = withSuffix("SparqlView")
+    val ArangoView           = withSuffix("ArangoView")
     val AggregateElasticView = withSuffix("AggregateElasticView")
     val UserRef              = withSuffix("UserRef")
     val GroupRef             = withSuffix("GroupRef")

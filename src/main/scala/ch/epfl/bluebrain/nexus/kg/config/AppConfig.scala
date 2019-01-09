@@ -47,7 +47,9 @@ final case class AppConfig(description: Description,
                            elastic: ElasticConfig,
                            pagination: PaginationConfig,
                            indexing: IndexingConfig,
-                           kafka: KafkaConfig)
+                           kafka: KafkaConfig,
+                           arango: ArangoConfig
+                          )
 
 object AppConfig {
 
@@ -126,6 +128,13 @@ object AppConfig {
     * @param migration  the v0 events migration config
     */
   final case class KafkaConfig(adminTopic: String, migration: MigrationConfig)
+
+  /**
+    * Kafka config
+    *
+    * @param baseUri              base URI of Arango service
+    */
+  final case class ArangoConfig(baseUri: Uri)
 
   /**
     * Migration config
@@ -244,5 +253,6 @@ object AppConfig {
   implicit def toIam(implicit appConfig: AppConfig): IamConfig                 = appConfig.iam
   implicit def toAdmin(implicit appConfig: AppConfig): AdminConfig             = appConfig.admin
   implicit def toIndexing(implicit appConfig: AppConfig): IndexingConfig       = appConfig.indexing
+  implicit def toArango(implicit appConfig: AppConfig): ArangoConfig       = appConfig.arango
 
 }

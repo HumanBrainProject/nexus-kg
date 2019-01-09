@@ -55,7 +55,8 @@ class Settings(config: Config) extends Extension {
     loadConfigOrThrow[ElasticConfig](config, "app.elastic"),
     loadConfigOrThrow[PaginationConfig](config, "app.pagination"),
     loadConfigOrThrow[IndexingConfig](config, "app.indexing"),
-    loadConfigOrThrow[KafkaConfig](config, "app.kafka")
+    loadConfigOrThrow[KafkaConfig](config, "app.kafka"),
+    loadConfigOrThrow[ArangoConfig](config, "app.arango")
   )
 
 }

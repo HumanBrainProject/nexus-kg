@@ -268,6 +268,14 @@ object View {
       rev: Long,
       deprecated: Boolean
   ) extends SingleView
+
+  final case class ArangoView(
+                               ref: ProjectRef,
+                               id: AbsoluteIri,
+                               uuid: String,
+                               rev: Long,
+                               deprecated: Boolean
+                             ) extends SingleView
   
   /**
     * Aggregation of [[ElasticView]].

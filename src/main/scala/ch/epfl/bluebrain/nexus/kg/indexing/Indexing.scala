@@ -18,7 +18,7 @@ import ch.epfl.bluebrain.nexus.kg.async.{DistributedCache, ProjectViewCoordinato
 import ch.epfl.bluebrain.nexus.kg.config.AppConfig
 import ch.epfl.bluebrain.nexus.kg.config.Vocabulary.nxv
 import ch.epfl.bluebrain.nexus.kg.directives.LabeledProject
-import ch.epfl.bluebrain.nexus.kg.indexing.View.{ElasticView, SingleView, SparqlView}
+import ch.epfl.bluebrain.nexus.kg.indexing.View.{ArangoView, ElasticView, SingleView, SparqlView}
 import ch.epfl.bluebrain.nexus.kg.indexing.v0.MigrationIndexer
 import ch.epfl.bluebrain.nexus.kg.resolve.Resolver.InProjectResolver
 import ch.epfl.bluebrain.nexus.kg.resources._
@@ -40,6 +40,7 @@ private class Indexing(resources: Resources[Task], cache: DistributedCache[Task]
 
   private val elasticUUID = "684bd815-9273-46f4-ac1c-0383d4a98254"
   private val sparqlUUID  = "d88b71d2-b8a4-4744-bf22-2d99ef5bd26b"
+  private val arangolUUID  = "ba491044-3390-4633-93c7-61bf43e81efb"
 
   private val defaultEsMapping =
     jsonContentOf("/elastic/mapping.json", Map(quote("{{docType}}") -> config.elastic.docType))
@@ -53,6 +54,9 @@ private class Indexing(resources: Resources[Task], cache: DistributedCache[Task]
 
     def defaultSparqlView(projectRef: ProjectRef): SparqlView =
       SparqlView(projectRef, nxv.defaultSparqlIndex.value, sparqlUUID, 1L, deprecated = false)
+
+    def defaultArangoView(projectRef: ProjectRef): ArangoView =
+      ArangoView(projectRef, nxv.defaultArangoIndex.value, arangolUUID, 1L, deprecated = false)
 
     def defaultInProjectResolver(projectRef: ProjectRef): InProjectResolver =
       InProjectResolver(projectRef, nxv.InProject.value, 1L, deprecated = false, 1)
@@ -77,6 +81,7 @@ private class Indexing(resources: Resources[Task], cache: DistributedCache[Task]
             _ <- cache.addResolver(projectRef, defaultInProjectResolver(projectRef))
             _ <- cache.addView(ProjectRef(uuid), defaultEsView(projectRef))
             _ <- cache.addView(ProjectRef(uuid), defaultSparqlView(projectRef))
+            _ <- cache.addView(ProjectRef(uuid), defaultArangoView(projectRef))
             _ = coordinator ! Msg(AccountRef(orgUUid), ProjectRef(uuid))
           } yield ()
 
@@ -136,11 +141,12 @@ object Indexing {
     implicit val ul            = HttpClient.taskHttpClient
     implicit val jsonClient    = HttpClient.withTaskUnmarshaller[Json]
     implicit val elasticClient = ElasticClient[Task](config.elastic.base)
-    implicit val forwardClient = ForwardClient(config.http.publicUri)
+    implicit val forwardClient = ForwardClient(config.arango.baseUri)
 
     def selector(view: SingleView, labeledProject: LabeledProject): ActorRef = view match {
       case v: ElasticView => ElasticIndexer.start(v, resources, labeledProject)
       case v: SparqlView  => SparqlIndexer.start(v, resources, labeledProject)
+      case v: ArangoView => InstanceForwardIndexer.start(v)
     }
 
     def onStop(view: SingleView): Task[Boolean] = view match {
@@ -148,13 +154,14 @@ object Indexing {
         elasticClient.deleteIndex(v.index)
       case _: SparqlView =>
         BlazegraphClient[Task](config.sparql.base, view.name, config.sparql.akkaCredentials).deleteNamespace
+      case _: ArangoView =>
+       Task.pure(true)
     }
     val coordinator = ProjectViewCoordinator.start(cache, selector, onStop, None, config.cluster.shards)
     val indexing    = new Indexing(resources, cache, coordinator)
     indexing.startKafkaStream()
     indexing.startResolverStream()
     indexing.startViewStream()
-    InstanceForwardIndexer.start()
     indexing.startMigrationStream()
 
   }

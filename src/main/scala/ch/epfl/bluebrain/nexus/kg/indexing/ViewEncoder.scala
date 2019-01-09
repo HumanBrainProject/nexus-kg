@@ -52,6 +52,8 @@ object ViewEncoder {
           .triplesFor(resourceSchemas) ++ view.triplesFor(includeMeta, sourceAsText, resourceTag, mapping))
     case view: SparqlView =>
       IriNode(view.id) -> Graph(view.mainTriples(nxv.SparqlView))
+    case view: ArangoView =>
+      IriNode(view.id) -> Graph(view.mainTriples(nxv.ArangoView))
     case view @ AggregateElasticView(_, _, _, id, _, _) =>
       IriNode(id) -> Graph(
         view.mainTriples(nxv.AggregateElasticView, nxv.Alpha) ++ view.triplesForView(view.valueString))

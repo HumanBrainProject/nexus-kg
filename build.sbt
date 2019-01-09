@@ -27,7 +27,7 @@ scalafmt: {
 // Dependency versions
 val adminVersion                = "0.3.8"
 val iamVersion                  = "0.10.27"
-val commonsVersion              = "0.10.38"
+val commonsVersion              = "0.10.41"
 val rdfVersion                  = "0.2.26"
 val serviceVersion              = "0.10.19"
 val sourcingVersion             = "0.10.8"
@@ -48,7 +48,7 @@ val shapelessVersion            = "2.3.3"
 val scalaTestVersion            = "3.0.5"
 val wesoValidatorVersion        = "0.0.65-nexus1"
 val kryoVersion                 = "0.5.2"
-val forwardIndexerVersion       = "0.10.19"
+val forwardIndexerVersion       = "0.10.20"
 
 // Dependencies modules
 lazy val adminClient          = "ch.epfl.bluebrain.nexus" %% "admin-client"                % adminVersion

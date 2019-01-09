@@ -5,6 +5,7 @@ import cats.MonadError
 import ch.epfl.bluebrain.nexus.commons.forward.client.ForwardClient
 import ch.epfl.bluebrain.nexus.iam.client.types.Identity._
 import ch.epfl.bluebrain.nexus.kg.config.AppConfig
+import ch.epfl.bluebrain.nexus.kg.indexing.View.ArangoView
 import ch.epfl.bluebrain.nexus.kg.resources.Event._
 import ch.epfl.bluebrain.nexus.kg.resources.Event
 import ch.epfl.bluebrain.nexus.kg.serializers.Serializer._
@@ -12,6 +13,7 @@ import ch.epfl.bluebrain.nexus.service.indexer.persistence.{IndexerConfig, Seque
 import journal.Logger
 import monix.eval.Task
 import monix.execution.Scheduler
+
 import scala.concurrent.Future
 
 /**
@@ -36,7 +38,7 @@ class InstanceForwardIndexer[F[_]](client: ForwardClient[F], settings: ForwardIn
     * @param event the event to index
     * @return a Unit value in the ''F[_]'' context
     */
-  final def apply(event: Event): F[Unit] = {
+  def apply(event: Event): F[Unit] = {
 //    val version = event.id.schemaId.version
 //    val fullId = Seq(
 //      event.id.schemaId.domainId.orgId.id,
@@ -45,7 +47,8 @@ class InstanceForwardIndexer[F[_]](client: ForwardClient[F], settings: ForwardIn
 //      s"v${version.major}.${version.minor}.${version.patch}",
 //      event.id.id).mkString("/")
     log.info(event.id.toString)
-    val id = event.id.toString
+    val id = event.id.value.toString()
+    val projectId = event.id.parent.id
     val authorId = event.identity match {
       case UserRef(_, sub) => Some(sub)
       case GroupRef(_, group) => Some(group)
@@ -59,16 +62,16 @@ class InstanceForwardIndexer[F[_]](client: ForwardClient[F], settings: ForwardIn
     event match {
       case Created(_, _ , _, _, source, _, _) =>
         log.info(s"Forward Indexing - CREATE [${authorId} at ${eventTimeStamp}] id: '${id}'")
-        client.create(id, source, authorId,  eventTimeStampOpt)
+        client.create(projectId, id, source, authorId,  eventTimeStampOpt)
 
       case Updated(_, rev, _, source, _, _) =>
         val fullIdWithRev = s"${id}/${rev}"
         log.info(s"Forward Indexing - UPDATE [${authorId} at $eventTimeStamp}] id: '${fullIdWithRev}'")
-        client.update(fullIdWithRev, source, authorId, eventTimeStampOpt)
+        client.update(projectId, fullIdWithRev, source, authorId, eventTimeStampOpt)
 
       case Deprecated(_, rev, _, _ , _) =>
         log.info(s"Forward Indexing - DEPRECATE [${authorId} at ${eventTimeStamp}] id: '${id}' rev: ${rev}")
-        client.delete(id, Some(rev.toString), authorId, eventTimeStampOpt)
+        client.delete(projectId, id, Some(rev.toString), authorId, eventTimeStampOpt)
 
       // TODO not used yet
       case TagAdded(_, _, _, _, _, _) =>
@@ -111,7 +114,7 @@ object InstanceForwardIndexer {
     * @param labeledProject project to which the resource belongs containing label information (account label and project label)
     */
   // $COVERAGE-OFF$
-  final def start()(
+  final def start(view: ArangoView)(
     implicit client: ForwardClient[Task],
     s: Scheduler,
     as: ActorSystem,
@@ -127,8 +130,8 @@ object InstanceForwardIndexer {
 
     SequentialTagIndexer.start(
       IndexerConfig.builder
-        .name(s"forward-indexer-arango")
-        .tag(s"project=forward")
+        .name(s"forward-indexer-${view.name}")
+        .tag(s"project=${view.ref.id}")
         .plugin(config.persistence.queryJournalPlugin)
         .retry(config.indexing.retry.maxCount, config.indexing.retry.strategy)
         .batch(config.indexing.batch, config.indexing.batchTimeout)
