@@ -16,7 +16,6 @@ import akka.util.Timeout
 import ch.epfl.bluebrain.nexus.admin.client.AdminClient
 import ch.epfl.bluebrain.nexus.commons.es.client.{ElasticClient, ElasticDecoder}
 import ch.epfl.bluebrain.nexus.commons.http.HttpClient
-import ch.epfl.bluebrain.nexus.commons.http.HttpClient._
 import ch.epfl.bluebrain.nexus.commons.sparql.client.BlazegraphClient
 import ch.epfl.bluebrain.nexus.commons.sparql.client.SparqlCirceSupport._
 import ch.epfl.bluebrain.nexus.commons.types.search.QueryResults
@@ -87,11 +86,11 @@ object Main {
     implicit val mt = ActorMaterializer()
     implicit val tm = Timeout(appConfig.cluster.replicationTimeout)
 
-    implicit val utClient   = untyped
-    implicit val jsonClient = HttpClient.withUnmarshaller[Json]
-    implicit val rsClient   = HttpClient.withUnmarshaller[ResultSet]
+    implicit val utClient   = HttpClient.taskHttpClient
+    implicit val jsonClient = HttpClient.withTaskUnmarshaller[Json]
+    implicit val rsClient   = HttpClient.withTaskUnmarshaller[ResultSet]
     implicit val esDecoders = ElasticDecoder[Json]
-    implicit val qrClient   = HttpClient.withUnmarshaller[QueryResults[Json]]
+    implicit val qrClient   = HttpClient.withTaskUnmarshaller[QueryResults[Json]]
 
     def clients(implicit elasticConfig: ElasticConfig, sparqlConfig: SparqlConfig): Clients[Task] = {
       val sparql           = BlazegraphClient[Task](sparqlConfig.base, sparqlConfig.defaultIndex, sparqlConfig.akkaCredentials)
