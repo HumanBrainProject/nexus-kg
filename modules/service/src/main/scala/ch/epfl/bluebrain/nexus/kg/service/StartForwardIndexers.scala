@@ -26,13 +26,19 @@ import scala.concurrent.{ExecutionContext, Future}
   * @param ec           the implicitly available [[ExecutionContext]]
   */
 // $COVERAGE-OFF$
-class StartForwardIndexers(settings: Settings,
-                           forwardClient: ForwardClient[Future],
-                           apiUri: Uri)(implicit
-                                        as: ActorSystem,
-                                        ec: ExecutionContext) {
+class StartForwardIndexers(
+  settings: Settings,
+  forwardClient: ForwardClient[Future],
+  apiUri: Uri,
+  id: String,
+  name: String
+)(
+  implicit
+  as: ActorSystem,
+  ec: ExecutionContext
+) {
 
-  private implicit val config: Configuration =
+  implicit private val config: Configuration =
     Configuration.default.withDiscriminator("type")
 
   private val indexingSettings = ForwardIndexingSettings(apiUri)
@@ -42,13 +48,11 @@ class StartForwardIndexers(settings: Settings,
   private def startIndexingInstances() =
     SequentialTagIndexer.start[InstanceEvent](
       InstanceForwardIndexer[Future](forwardClient, indexingSettings)(catsStdInstancesForFuture(ec)).apply _,
-      "instance-to-forward",
+      id,
       settings.Persistence.QueryJournalPlugin,
       "instance",
-      "sequential-instance-forward-indexer"
+      name
     )
-
-
 
 }
 
@@ -61,11 +65,12 @@ object StartForwardIndexers {
     * @param forwardClient the Forward client implementation
     * @param apiUri        the service public uri + prefix
     */
-  final def apply(settings: Settings, forwardClient: ForwardClient[Future], apiUri: Uri)(
+  final def apply(settings: Settings, forwardClient: ForwardClient[Future], apiUri: Uri, id: String, name: String)(
     implicit
     as: ActorSystem,
-    ec: ExecutionContext): StartForwardIndexers =
-    new StartForwardIndexers(settings, forwardClient, apiUri)
+    ec: ExecutionContext
+  ): StartForwardIndexers =
+    new StartForwardIndexers(settings, forwardClient, apiUri, id, name)
 
 }
 

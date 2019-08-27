@@ -7,7 +7,6 @@ import ch.epfl.bluebrain.nexus.kg.core.instances.InstanceEvent
 import ch.epfl.bluebrain.nexus.kg.indexing.{BaseForwardIndexer, ForwardIndexingSettings}
 import journal.Logger
 
-
 /**
   * Instance incremental indexing logic that pushes data into an Forward indexer.
   *
@@ -17,8 +16,8 @@ import journal.Logger
   * @tparam F the monadic effect type
   */
 class InstanceForwardIndexer[F[_]](client: ForwardClient[F], settings: ForwardIndexingSettings)(
-    implicit F: MonadError[F, Throwable])
-    extends BaseForwardIndexer[F](client, settings){
+  implicit F: MonadError[F, Throwable]
+) extends BaseForwardIndexer[F](client, settings) {
 
   private val log = Logger[this.type]
   log.info(s" ==== forward index base url: ${settings.base}")
@@ -37,7 +36,8 @@ class InstanceForwardIndexer[F[_]](client: ForwardClient[F], settings: ForwardIn
       event.id.schemaId.domainId.id,
       event.id.schemaId.name,
       s"v${version.major}.${version.minor}.${version.patch}",
-      event.id.id).mkString("/")
+      event.id.id
+    ).mkString("/")
     val authorId = event.meta.author.id.id
     val authorIdOpt = if (authorId.size > 0) Some(authorId) else None
     val eventTimeStamp = event.meta.instant.toString
@@ -82,6 +82,7 @@ object InstanceForwardIndexer {
     * @tparam F the monadic effect type
     */
   final def apply[F[_]](client: ForwardClient[F], settings: ForwardIndexingSettings)(
-      implicit F: MonadError[F, Throwable]): InstanceForwardIndexer[F] =
+    implicit F: MonadError[F, Throwable]
+  ): InstanceForwardIndexer[F] =
     new InstanceForwardIndexer(client, settings)
 }

@@ -59,8 +59,20 @@ object Main {
 
       StartSparqlIndexers(settings, bootstrap.sparqlClient, bootstrap.contexts, bootstrap.apiUri)
       StartElasticIndexers(settings, bootstrap.elasticClient, bootstrap.contexts, bootstrap.apiUri)
-      StartForwardIndexers(settings, bootstrap.forwardClient, bootstrap.apiUri)
-      StartForwardIndexers(settings, bootstrap.forwardCoreClient, bootstrap.apiUri)
+      StartForwardIndexers(
+        settings,
+        bootstrap.forwardClient,
+        bootstrap.apiUri,
+        "instance-to-forward",
+        "sequential-instance-forward-indexer"
+      )
+      StartForwardIndexers(
+        settings,
+        bootstrap.forwardClient,
+        bootstrap.apiUri,
+        "instance-to-forward-core",
+        "sequential-instance-forward-indexer-core"
+      )
 
       if (settings.Kafka.Enabled) StartKafkaPublishers(settings.Kafka.Topic, settings.Persistence.QueryJournalPlugin)
     }
