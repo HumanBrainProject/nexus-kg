@@ -223,9 +223,18 @@ class Settings(config: Config) extends Extension {
   object Forward {
 
     /**
-      * The base uri for the elastic endpoint.
+      * The base uri for the forwarding endpoint.
       */
     val BaseUri = Uri(ns.getString("forward.base-uri"))
+
+  }
+
+  object ForwardCore {
+
+    /**
+      * The base uri for the forwarding core endpoint.
+      */
+    val BaseUri = Uri(ns.getString("forward.core.base-uri"))
 
   }
 

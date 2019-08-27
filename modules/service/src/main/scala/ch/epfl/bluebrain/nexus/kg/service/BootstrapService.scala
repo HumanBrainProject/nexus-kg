@@ -61,11 +61,12 @@ import scala.concurrent.{ExecutionContext, ExecutionContextExecutor, Future}
   * @param mt       the implicitly available [[ActorMaterializer]]
   */
 // $COVERAGE-OFF$
-class BootstrapService(settings: Settings)(implicit as: ActorSystem,
-                                           ec: ExecutionContextExecutor,
-                                           mt: ActorMaterializer,
-                                           cl: UntypedHttpClient[Future])
-    extends BootstrapQuerySettings(settings) {
+class BootstrapService(settings: Settings)(
+  implicit as: ActorSystem,
+  ec: ExecutionContextExecutor,
+  mt: ActorMaterializer,
+  cl: UntypedHttpClient[Future]
+) extends BootstrapQuerySettings(settings) {
 
   private val baseUri = settings.Http.PublicUri
 
@@ -84,33 +85,38 @@ class BootstrapService(settings: Settings)(implicit as: ActorSystem,
 
   val forwardClient = ForwardClient[Future](settings.Forward.BaseUri)
 
+  val forwardCoreClient = ForwardClient[Future](settings.ForwardCore.BaseUri)
+
   val (orgs, doms, schemas, contexts, instances, queries) = operations()
 
-  private implicit val iamC: IamClient[Future]    = iamClient(settings.IAM.BaseUri)
-  private implicit val clock: Clock               = Clock.systemUTC
-  private implicit val orderedKeys: OrderedKeys   = kgOrderedKeys
-  private implicit val prefixes: PrefixUris       = settings.Prefixes
-  private implicit val tracing: TracingDirectives = TracingDirectives()
-  private val elasticSettings = ElasticIndexingSettings(settings.Elastic.IndexPrefix,
-                                                        settings.Elastic.Type,
-                                                        apiUri,
-                                                        settings.Prefixes.CoreVocabulary)
+  implicit private val iamC: IamClient[Future] = iamClient(settings.IAM.BaseUri)
+  implicit private val clock: Clock = Clock.systemUTC
+  implicit private val orderedKeys: OrderedKeys = kgOrderedKeys
+  implicit private val prefixes: PrefixUris = settings.Prefixes
+  implicit private val tracing: TracingDirectives = TracingDirectives()
+  private val elasticSettings = ElasticIndexingSettings(
+    settings.Elastic.IndexPrefix,
+    settings.Elastic.Type,
+    apiUri,
+    settings.Prefixes.CoreVocabulary
+  )
 
-  private val idsToEntities        = new GroupedIdsToEntityRetrieval(instances, schemas, contexts, doms, orgs)
+  private val idsToEntities = new GroupedIdsToEntityRetrieval(instances, schemas, contexts, doms, orgs)
   private val schemaImportResolver = new SchemaImportResolver(apiUri.toString(), schemas.fetch, contexts.resolve)
+
   val instanceImportResolver =
     new InstanceImportResolver[Future](apiUri.toString(), instances.fetch, contexts.resolve)
   implicit val validator: ShaclValidator[Future] = new ShaclValidator(schemaImportResolver)
 
   private val apis = uriPrefix(apiUri) {
-    implicit val ctxs         = contexts
+    implicit val ctxs = contexts
     implicit val insImportRes = instanceImportResolver
     OrganizationRoutes(orgs, sparqlClient, elasticClient, elasticSettings, querySettings, apiUri).routes ~
-      DomainRoutes(doms, sparqlClient, elasticClient, elasticSettings, querySettings, apiUri).routes ~
-      SchemaRoutes(schemas, sparqlClient, elasticClient, elasticSettings, querySettings, apiUri).routes ~
-      ContextRoutes(sparqlClient, elasticClient, elasticSettings, querySettings, apiUri).routes ~
-      InstanceRoutes(instances, sparqlClient, elasticClient, elasticSettings, querySettings, apiUri).routes ~
-      QueryRoutes(queries, sparqlClient, querySettings, idsToEntities, apiUri).routes
+    DomainRoutes(doms, sparqlClient, elasticClient, elasticSettings, querySettings, apiUri).routes ~
+    SchemaRoutes(schemas, sparqlClient, elasticClient, elasticSettings, querySettings, apiUri).routes ~
+    ContextRoutes(sparqlClient, elasticClient, elasticSettings, querySettings, apiUri).routes ~
+    InstanceRoutes(instances, sparqlClient, elasticClient, elasticSettings, querySettings, apiUri).routes ~
+    QueryRoutes(queries, sparqlClient, querySettings, idsToEntities, apiUri).routes
   }
   private val static = uriPrefix(baseUri)(StaticRoutes().routes)
 
@@ -134,43 +140,46 @@ class BootstrapService(settings: Settings)(implicit as: ActorSystem,
     val sourcingSettings = SourcingAkkaSettings(journalPluginId = settings.Persistence.QueryJournalPlugin)
 
     val orgsAgg =
-      ShardingAggregate("organization",
-                        sourcingSettings.copy(passivationTimeout = settings.Organizations.PassivationTimeout))(
-        Organizations.initial,
-        Organizations.next,
-        Organizations.eval)
+      ShardingAggregate(
+        "organization",
+        sourcingSettings.copy(passivationTimeout = settings.Organizations.PassivationTimeout)
+      )(Organizations.initial, Organizations.next, Organizations.eval)
 
     val inFileProcessor = AkkaInOutFileStream(settings)
 
     val domsAgg = ShardingAggregate(
       "domain",
       sourcingSettings
-        .copy(passivationTimeout = settings.Domains.PassivationTimeout))(Domains.initial, Domains.next, Domains.eval)
+        .copy(passivationTimeout = settings.Domains.PassivationTimeout)
+    )(Domains.initial, Domains.next, Domains.eval)
 
     val schemasAgg = ShardingAggregate(
       "schema",
       sourcingSettings
-        .copy(passivationTimeout = settings.Schemas.PassivationTimeout))(Schemas.initial, Schemas.next, Schemas.eval)
+        .copy(passivationTimeout = settings.Schemas.PassivationTimeout)
+    )(Schemas.initial, Schemas.next, Schemas.eval)
 
     val ctxAgg = ShardingAggregate(
       "context",
       sourcingSettings
-        .copy(passivationTimeout = settings.Schemas.PassivationTimeout))(Contexts.initial, Contexts.next, Contexts.eval)
+        .copy(passivationTimeout = settings.Schemas.PassivationTimeout)
+    )(Contexts.initial, Contexts.next, Contexts.eval)
 
     val instancesAgg =
       ShardingAggregate("instance", sourcingSettings.copy(passivationTimeout = settings.Instances.PassivationTimeout))(
         Instances.initial,
         Instances.next,
-        Instances.eval)
+        Instances.eval
+      )
 
-    val orgs               = Organizations(orgsAgg)
-    val doms               = Domains(domsAgg, orgs)
-    val contexts           = Contexts(ctxAgg, doms, apiUri.toString())
-    val schemas            = Schemas(schemasAgg, doms, contexts)
+    val orgs = Organizations(orgsAgg)
+    val doms = Domains(domsAgg, orgs)
+    val contexts = Contexts(ctxAgg, doms, apiUri.toString())
+    val schemas = Schemas(schemasAgg, doms, contexts)
     implicit val instances = Instances(instancesAgg, schemas, contexts, inFileProcessor)
 
     val cache: Cache[Future, Query] = ShardedCache[Query]("queries", CacheSettings())
-    val queries: Queries[Future]    = Queries(cache)
+    val queries: Queries[Future] = Queries(cache)
     (orgs, doms, schemas, contexts, instances, queries)
   }
 
@@ -187,10 +196,12 @@ object BootstrapService {
     *
     * @param settings the application settings
     */
-  final def apply(settings: Settings)(implicit as: ActorSystem,
-                                      ec: ExecutionContextExecutor,
-                                      mt: ActorMaterializer,
-                                      cl: UntypedHttpClient[Future]): BootstrapService =
+  final def apply(settings: Settings)(
+    implicit as: ActorSystem,
+    ec: ExecutionContextExecutor,
+    mt: ActorMaterializer,
+    cl: UntypedHttpClient[Future]
+  ): BootstrapService =
     new BootstrapService(settings)
 
   /**
@@ -198,16 +209,16 @@ object BootstrapService {
     *
     * @param baseIamUri the baseUri for IAM service
     */
-  def iamClient(baseIamUri: Uri)(implicit ec: ExecutionContext,
-                                 mt: Materializer,
-                                 cl: UntypedHttpClient[Future]): IamClient[Future] = {
+  def iamClient(
+    baseIamUri: Uri
+  )(implicit ec: ExecutionContext, mt: Materializer, cl: UntypedHttpClient[Future]): IamClient[Future] = {
     import _root_.io.circe.generic.extras.Configuration
     import _root_.io.circe.generic.extras.auto._
     implicit val identityDecoder = JsonLdSerialization.identityDecoder
-    implicit val iamUri          = IamUri(baseIamUri)
-    implicit val config          = Configuration.default.withDiscriminator("@type")
-    implicit val aclCl           = HttpClient.withAkkaUnmarshaller[FullAccessControlList]
-    implicit val userCl          = HttpClient.withAkkaUnmarshaller[User]
+    implicit val iamUri = IamUri(baseIamUri)
+    implicit val config = Configuration.default.withDiscriminator("@type")
+    implicit val aclCl = HttpClient.withAkkaUnmarshaller[FullAccessControlList]
+    implicit val userCl = HttpClient.withAkkaUnmarshaller[User]
     IamClient()
   }
 
@@ -226,7 +237,8 @@ object BootstrapService {
         "published",
         "deprecated",
         "links"
-      ))
+      )
+    )
 
   abstract class BootstrapQuerySettings(settings: Settings) {
 
@@ -239,11 +251,13 @@ object BootstrapService {
       apiUri
     )
 
-    private[service] implicit val filteringSettings: FilteringSettings =
+    implicit private[service] val filteringSettings: FilteringSettings =
       FilteringSettings(
         settings.Prefixes.CoreVocabulary,
-        jsonContentOf("/contexts/nexus/core/search/search_expanded.json",
-                      Map(Pattern.quote("{{vocab}}") -> settings.Prefixes.CoreVocabulary.toString()))
+        jsonContentOf(
+          "/contexts/nexus/core/search/search_expanded.json",
+          Map(Pattern.quote("{{vocab}}") -> settings.Prefixes.CoreVocabulary.toString())
+        )
       )
 
   }

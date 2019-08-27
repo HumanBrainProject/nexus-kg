@@ -33,9 +33,9 @@ object Main {
 
     val settings = new Settings(config)
 
-    implicit val as                            = ActorSystem(settings.Description.ActorSystemName, config)
-    implicit val ec                            = as.dispatcher
-    implicit val mt                            = ActorMaterializer()
+    implicit val as = ActorSystem(settings.Description.ActorSystemName, config)
+    implicit val ec = as.dispatcher
+    implicit val mt = ActorMaterializer()
     implicit val cl: UntypedHttpClient[Future] = HttpClient.akkaHttpClient
 
     val logger = Logging(as, getClass)
@@ -60,6 +60,7 @@ object Main {
       StartSparqlIndexers(settings, bootstrap.sparqlClient, bootstrap.contexts, bootstrap.apiUri)
       StartElasticIndexers(settings, bootstrap.elasticClient, bootstrap.contexts, bootstrap.apiUri)
       StartForwardIndexers(settings, bootstrap.forwardClient, bootstrap.apiUri)
+      StartForwardIndexers(settings, bootstrap.forwardCoreClient, bootstrap.apiUri)
 
       if (settings.Kafka.Enabled) StartKafkaPublishers(settings.Kafka.Topic, settings.Persistence.QueryJournalPlugin)
     }
