@@ -68,7 +68,7 @@ object Main {
       )
       StartForwardIndexers(
         settings,
-        bootstrap.forwardClient,
+        bootstrap.forwardCoreClient,
         bootstrap.apiUri,
         "instance-to-forward-core",
         "sequential-instance-forward-indexer-core"
