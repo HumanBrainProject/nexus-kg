@@ -7,4 +7,4 @@ import akka.http.scaladsl.model.Uri
   *
   * @param base         the application base uri for operating on resources
   */
-final case class ForwardIndexingSettings(base: Uri)
+final case class ForwardIndexingSettings(base: Uri, name: String = "forward indexer")

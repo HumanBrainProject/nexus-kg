@@ -5,7 +5,6 @@ import _root_.io.circe.generic.extras.Configuration
 import _root_.io.circe.java8.time._
 import cats.instances.future._
 import akka.actor.{ActorSystem}
-import akka.http.scaladsl.model.Uri
 import ch.epfl.bluebrain.nexus.kg.indexing.ForwardIndexingSettings
 import ch.epfl.bluebrain.nexus.kg.indexing.instances.InstanceForwardIndexer
 import ch.epfl.bluebrain.nexus.commons.forward.client.ForwardClient
@@ -21,7 +20,7 @@ import scala.concurrent.{ExecutionContext, Future}
   *
   * @param settings     the app settings
   * @param forwardClient the Forward client implementation
-  * @param apiUri       the service public uri + prefix
+  * @param forwardIndexingSettings       the Forward client settings
   * @param as           the implicitly available [[ActorSystem]]
   * @param ec           the implicitly available [[ExecutionContext]]
   */
@@ -29,7 +28,7 @@ import scala.concurrent.{ExecutionContext, Future}
 class StartForwardIndexers(
   settings: Settings,
   forwardClient: ForwardClient[Future],
-  apiUri: Uri,
+  forwardIndexingSettings: ForwardIndexingSettings,
   id: String,
   name: String
 )(
@@ -41,13 +40,11 @@ class StartForwardIndexers(
   implicit private val config: Configuration =
     Configuration.default.withDiscriminator("type")
 
-  private val indexingSettings = ForwardIndexingSettings(apiUri)
-
   startIndexingInstances()
 
   private def startIndexingInstances() =
     SequentialTagIndexer.start[InstanceEvent](
-      InstanceForwardIndexer[Future](forwardClient, indexingSettings)(catsStdInstancesForFuture(ec)).apply _,
+      InstanceForwardIndexer[Future](forwardClient, forwardIndexingSettings)(catsStdInstancesForFuture(ec)).apply _,
       id,
       settings.Persistence.QueryJournalPlugin,
       "instance",
@@ -63,14 +60,20 @@ object StartForwardIndexers {
     *
     * @param settings      the app settings
     * @param forwardClient the Forward client implementation
-    * @param apiUri        the service public uri + prefix
+    * @param forwardIndexingSettings        the Forward client settings
     */
-  final def apply(settings: Settings, forwardClient: ForwardClient[Future], apiUri: Uri, id: String, name: String)(
+  final def apply(
+    settings: Settings,
+    forwardClient: ForwardClient[Future],
+    forwardIndexingSettings: ForwardIndexingSettings,
+    id: String,
+    name: String
+  )(
     implicit
     as: ActorSystem,
     ec: ExecutionContext
   ): StartForwardIndexers =
-    new StartForwardIndexers(settings, forwardClient, apiUri, id, name)
+    new StartForwardIndexers(settings, forwardClient, forwardIndexingSettings, id, name)
 
 }
 

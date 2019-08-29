@@ -2,8 +2,8 @@ package ch.epfl.bluebrain.nexus.kg.indexing.instances
 
 import cats.MonadError
 import ch.epfl.bluebrain.nexus.commons.forward.client.ForwardClient
-import ch.epfl.bluebrain.nexus.kg.core.instances.InstanceEvent._
 import ch.epfl.bluebrain.nexus.kg.core.instances.InstanceEvent
+import ch.epfl.bluebrain.nexus.kg.core.instances.InstanceEvent._
 import ch.epfl.bluebrain.nexus.kg.indexing.{BaseForwardIndexer, ForwardIndexingSettings}
 import journal.Logger
 
@@ -20,7 +20,7 @@ class InstanceForwardIndexer[F[_]](client: ForwardClient[F], settings: ForwardIn
 ) extends BaseForwardIndexer[F](client, settings) {
 
   private val log = Logger[this.type]
-  log.info(s" ==== forward index base url: ${settings.base} - to client ${client.base}")
+  log.info(s" ==== ${settings.name} base url: ${settings.base} - to client ${client.base}")
 
   /**
     * Indexes the event by pushing it's json ld representation into the Forward indexer while also updating the
@@ -45,26 +45,34 @@ class InstanceForwardIndexer[F[_]](client: ForwardClient[F], settings: ForwardIn
 
     event match {
       case InstanceCreated(_, _, _, value) =>
-        log.info(s"Forward Indexing - CREATE [${authorId} at ${eventTimeStamp}] id: '${fullId}'")
+        log.info(s"Forward Indexing - ${settings.name} - CREATE [${authorId} at ${eventTimeStamp}] id: '${fullId}'")
         client.create(fullId, value, authorIdOpt, eventTimeStampOpt)
 
       case InstanceUpdated(_, rev, _, value) =>
         val fullIdWithRev = s"${fullId}/${rev}"
-        log.info(s"Forward Indexing - UPDATE [${authorId} at $eventTimeStamp}] id: '${fullIdWithRev}'")
+        log.info(
+          s"Forward Indexing - ${settings.name} - UPDATE [${authorId} at $eventTimeStamp}] id: '${fullIdWithRev}'"
+        )
         client.update(fullIdWithRev, value, authorIdOpt, eventTimeStampOpt)
 
       case InstanceDeprecated(_, rev, _) =>
-        log.info(s"Forward Indexing - DEPRECATE [${authorId} at ${eventTimeStamp}] id: '${fullId}' rev: ${rev}")
+        log.info(
+          s"Forward Indexing - ${settings.name} - DEPRECATE [${authorId} at ${eventTimeStamp}] id: '${fullId}' rev: ${rev}"
+        )
         client.delete(fullId, Some(rev.toString), authorIdOpt, eventTimeStampOpt)
 
       // TODO not used yet
       case InstanceAttachmentCreated(_, _, _, _) =>
-        log.info(s"Forward Indexing - CREATEATTACHEMENT [${authorId} at ${eventTimeStamp}] id: '${fullId}'")
+        log.info(
+          s"Forward Indexing - ${settings.name} - CREATEATTACHEMENT [${authorId} at ${eventTimeStamp}] id: '${fullId}'"
+        )
         F.pure(())
 
       // TODO not used yet
       case InstanceAttachmentRemoved(_, _, _) =>
-        log.info(s"Forward Indexing - REMOVEATTACHEMENT [${authorId} at ${eventTimeStamp}] id: '${fullId}'")
+        log.info(
+          s"Forward Indexing - ${settings.name} - REMOVEATTACHEMENT [${authorId} at ${eventTimeStamp}] id: '${fullId}'"
+        )
         F.pure(())
     }
   }

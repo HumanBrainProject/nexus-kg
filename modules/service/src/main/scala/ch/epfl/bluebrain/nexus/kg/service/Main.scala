@@ -6,6 +6,7 @@ import akka.http.scaladsl.Http
 import akka.stream.ActorMaterializer
 import ch.epfl.bluebrain.nexus.commons.http.HttpClient
 import ch.epfl.bluebrain.nexus.commons.http.HttpClient.UntypedHttpClient
+import ch.epfl.bluebrain.nexus.kg.indexing.ForwardIndexingSettings
 import ch.epfl.bluebrain.nexus.kg.service.config.{ExternalConfig, Settings}
 import com.github.jsonldjava.core.DocumentLoader
 import com.typesafe.config.Config
@@ -62,14 +63,14 @@ object Main {
       StartForwardIndexers(
         settings,
         bootstrap.forwardClient,
-        bootstrap.apiUri,
+        new ForwardIndexingSettings(bootstrap.apiUri, "Forward indexer v0"),
         "instance-to-forward",
         "sequential-instance-forward-indexer"
       )
       StartForwardIndexers(
         settings,
         bootstrap.forwardCoreClient,
-        bootstrap.apiUri,
+        new ForwardIndexingSettings(bootstrap.apiUri, "Forward indexer core"),
         "instance-to-forward-core",
         "sequential-instance-forward-indexer-core"
       )
