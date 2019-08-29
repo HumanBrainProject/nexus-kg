@@ -20,7 +20,7 @@ class InstanceForwardIndexer[F[_]](client: ForwardClient[F], settings: ForwardIn
 ) extends BaseForwardIndexer[F](client, settings) {
 
   private val log = Logger[this.type]
-  log.info(s" ==== forward index base url: ${settings.base}")
+  log.info(s" ==== forward index base url: ${settings.base} - to client ${client.base}")
 
   /**
     * Indexes the event by pushing it's json ld representation into the Forward indexer while also updating the
