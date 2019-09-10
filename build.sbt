@@ -26,7 +26,7 @@ scalafmt: {
 
 // Library dependency versions
 val akkaVersion                     = "2.5.16"
-val akkaHttpVersion                 = "10.0.11"
+val akkaHttpVersion                 = "10.1.9"
 val akkaHttpCorsVersion             = "0.2.2"
 val akkaPersistenceCassandraVersion = "0.55"
 val akkaPersistenceInMemVersion     = "2.5.1.1"
@@ -107,7 +107,7 @@ lazy val docs = project
   .settings(
     name                         := "kg-docs",
     moduleName                   := "kg-docs",
-    version    := "0.9.25p",
+    version                      := "0.9.25p",
     paradoxTheme                 := Some(builtinParadoxTheme("generic")),
     paradoxProperties in Compile ++= Map("extref.service.base_url" -> "../"),
     target in (Compile, paradox) := (resourceManaged in Compile).value / "docs",
@@ -126,7 +126,7 @@ lazy val schemas = project
   .settings(
     name                := "kg-schemas",
     moduleName          := "kg-schemas",
-    version    := "0.9.25p",
+    version             := "0.9.25p",
     libraryDependencies += commonsSchemas
   )
 
@@ -239,11 +239,11 @@ lazy val forward = project
       forwardClient,
       journalCore,
       sourcingCore,
-      akkaTestkit  % Test,
-      asm          % Test,
-      commonsTest  % Test,
-      scalaTest    % Test,
-      sourcingMem  % Test
+      akkaTestkit % Test,
+      asm         % Test,
+      commonsTest % Test,
+      scalaTest   % Test,
+      sourcingMem % Test
     ),
     Test / fork              := true,
     Test / parallelExecution := false // workaround for jena initialization
@@ -257,7 +257,7 @@ lazy val service = project
   .settings(
     name                  := "kg-service",
     moduleName            := "kg-service",
-    version    := "0.9.25p",
+    version               := "0.9.25p",
     packageName in Docker := "kg",
     coverageFailOnMinimum := false,
     libraryDependencies ++= Seq(
@@ -387,12 +387,13 @@ inThisBuild(
     releaseEarlyNoGpg             := true,
     releaseEarlyEnableSyncToMaven := false,
     version                       := "0.9.25p"
-  ))
+  )
+)
 
 addCommandAlias("review", ";clean;scalafmtCheck;scalafmtSbtCheck;coverage;scapegoat;test;coverageReport;coverageAggregate;doc")
 
 mainClass in Compile := Some("ch.epfl.bluebrain.nexus.kg.service.Main")
-dockerBaseImage       := "openjdk:jre-alpine"
+dockerBaseImage      := "openjdk:jre-alpine"
 enablePlugins(JavaAppPackaging)
 enablePlugins(DockerPlugin)
 enablePlugins(AshScriptPlugin)
