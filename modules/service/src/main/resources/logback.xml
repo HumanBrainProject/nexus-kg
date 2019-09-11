@@ -26,6 +26,10 @@
         <appender-ref ref="TRACED" />
     </logger>
 
+    <logger name="ch.epfl.bluebrain.nexus.commons" level="${LOG_LEVEL:-DEBUG}">
+        <appender-ref ref="TRACED" />
+    </logger>
+
     <logger name="es.weso.shacl" level="WARN" />
 
 </configuration>
